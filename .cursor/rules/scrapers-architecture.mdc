@@ -1,0 +1,43 @@
+---
+description: Pipeline e convenzioni per scraper/enricher ModelRoot
+globs: modelroot/source/scrapers/**/*.py
+alwaysApply: false
+---
+
+# Scrapers — architettura
+
+## Pipeline (ordine esecuzione)
+
+1. `mass_scraper2.py` — ingest base (modelli, task, dataset, licenza grezza)
+2. `enrich_model_links.py` — `hf_url`, `license_link` su `Model`
+3. `mass_licences_other.py` — risoluzione licenze + `LicenseGroup`
+4. `papers_enrich.py` — paper / arxiv
+5. (futuro) `enrich_domains.py`, `enrich_resources.py`
+
+## Regole
+
+- **Un script = una responsabilità.** Non mescolare link, licenze, paper o domini nello stesso file.
+- **Naming:** `mass_*` = batch su tutto il DB; `enrich_*` = arricchimento mirato su campo specifico.
+- **Script obsoleti** → `source/deprecated/`, non eliminare senza motivo.
+- **Idempotenza:** ogni enricher processa solo nodi non ancora arricchiti (`WHERE m.hf_url IS NULL`, ecc.).
+- **Log:** `[OK]` solo dopo conferma scrittura Neo4j; `[SKIP]` se nessun miglioramento.
+- **Non toccare** `mass_licences_other.py` per link o domini.
+
+## Proprietà `Model` per fase
+
+| Script | Proprietà |
+|--------|-----------|
+| `enrich_model_links.py` | `hf_url`, `license_link` |
+| `mass_licences_other.py` | relazione `UNDER_LICENSE` + `BELONGS_TO` |
+| `papers_enrich.py` | relazione `BASED_ON_PAPER` / `CITED_IN` |
+
+`hf_url` = `https://huggingface.co/{name}` — derivabile senza API.
+`license_link` = navigazione DS (`cardData.license_link`), non usato per risolvere licenze.
+
+## Esempio — nuovo enricher
+
+```python
+# enrich_domains.py — CORRETTO: file dedicato, query su modi senza dominio
+
+# ❌ SBAGLIATO: aggiungere domini in mass_licences_other.py o enricher.py legacy
+```

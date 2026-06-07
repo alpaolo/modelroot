@@ -1,0 +1,41 @@
+---
+description: Schema Neo4j e pattern API Hugging Face per scrapers ModelRoot
+globs: modelroot/source/scrapers/**/*.py
+alwaysApply: false
+---
+
+# Scrapers — Neo4j e Hugging Face
+
+## Nodi e relazioni (non inventare ID alternativi)
+
+- Nodi: `Model`, `License`, `LicenseGroup`, `Task`, `Dataset`, `Paper`, `MainBrand`
+- `LicenseGroup.id`: `GREEN`, `YELLOW`, `ORANGE`, `RED_COPYLEFT`, `RED_RESTRICTED`
+- Relazioni chiave: `UNDER_LICENSE`, `BELONGS_TO`, `PERFORMS`, `DERIVED_FROM`, `PUBLISHED_BY`
+
+## Risoluzione licenze (ordine in `mass_licences_other.py`)
+
+1. `cardData.license` o top-level `license`
+2. `cardData.license_name` se `other` / `unknown`
+3. file `LICENSE` su HF (`raw/main/` o `raw/master/`)
+4. `base_model` / tag `base_model:` (un solo livello)
+5. **Skip** se ancora irrisolvibile — non riscrivere `unknown` nel DB
+
+## API Hugging Face
+
+- Endpoint modello: `GET https://huggingface.co/api/models/{model_id}`
+- Preferire sempre `cardData` rispetto al campo top-level (spesso `null`)
+- Gestire liste: `license` e `license_name` possono essere array
+- Rate limit (429): preferire `sleep` tra richieste; retry con backoff se implementato
+- **Non** interrogare GitHub per risolvere licenze (decisione progetto)
+
+## Scritture Neo4j robuste
+
+- Separare aggiornamento `Model` e collegamento `BELONGS_TO` se il gruppo può fallire
+- Validare `group_id` contro `LicenseGroup` esistenti prima del `MERGE`
+- Query di selezione enricher: solo record non ancora arricchiti
+
+```cypher
+-- ✅ Pattern enricher link
+MATCH (m:Model) WHERE m.hf_url IS NULL
+SET m.hf_url = "https://huggingface.co/" + m.name
+```

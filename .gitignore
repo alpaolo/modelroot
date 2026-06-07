@@ -1,0 +1,9 @@
+modelroot-env/
+neo4j/
+neo4j_community_backup/
+.env/
+__pycache__/
+*.pyc
+graph.html
+lib/
+*.log
