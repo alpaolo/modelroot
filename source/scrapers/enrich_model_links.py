@@ -2,6 +2,7 @@
 Fase A — arricchimento link su Model:
 - hf_url: pagina Hugging Face (derivabile, senza API)
 - license_link: URL documento licenza da cardData (solo navigazione DS)
+- REQUEST_DELAY_SECONDS=1.0 per ridurre errori 429 su API HF
 """
 import time
 
@@ -11,7 +12,7 @@ from neo4j import GraphDatabase
 from neo4j_config import NEO4J_AUTH as AUTH, NEO4J_URI as URI
 
 HF_MODEL_BASE_URL = "https://huggingface.co/"
-REQUEST_DELAY_SECONDS = 0.25
+REQUEST_DELAY_SECONDS = 1.0
 PROGRESS_SUMMARY_EVERY = 50
 
 

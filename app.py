@@ -2,7 +2,16 @@
 ModelRoot Streamlit app — catalog-first UX for license-aware model discovery.
 
 Modes: Model Catalog (default), Model Detail (1-hop graph), License Intelligence, Graph Explorer.
+Sidebar query_limit controls LIMIT on list/graph queries across all modes.
+Sidebar data_view_height sets native st.dataframe / graph iframe height in pixels.
+Minimal header: ModelRoot label in sidebar; native st.subheader per mode (no emoji).
 """
+QUERY_LIMIT_MIN = 25
+QUERY_LIMIT_MAX = 500
+QUERY_LIMIT_DEFAULT = 100
+DATA_VIEW_HEIGHT_MIN = 250
+DATA_VIEW_HEIGHT_MAX = 900
+DATA_VIEW_HEIGHT_DEFAULT = 450
 import json
 import os
 import sys
@@ -17,7 +26,41 @@ from pyvis.network import Network
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "source", "scrapers"))
 from neo4j_config import NEO4J_AUTH, NEO4J_URI
 
-st.set_page_config(layout="wide", page_title="ModelRoot Pro", page_icon="🌐")
+st.set_page_config(layout="wide", page_title="ModelRoot")
+
+
+def inject_app_styles():
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 2.25rem;
+            padding-bottom: 1.25rem;
+        }
+        section[data-testid="stSidebar"] h5 {
+            font-size: 0.75rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: #334155;
+            line-height: 1.5 !important;
+            padding-top: 0.25rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e2e8f0;
+            margin-bottom: 0.75rem;
+        }
+        .main h3 {
+            margin-top: 0.25rem;
+            line-height: 1.4;
+        }
+        div[data-testid="stDataFrame"] {
+            font-size: 0.8rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 LICENSE_GROUP_COLORS = {
     "GREEN": "#22c55e",
@@ -149,7 +192,14 @@ def load_model_detail(model_name):
     return rows[0] if rows else None
 
 
-def load_model_neighborhood(model_name, limit=25):
+def load_top_model_names(limit):
+    return run_query(
+        "MATCH (m:Model) RETURN m.name AS model ORDER BY m.downloads DESC LIMIT $limit",
+        {"limit": limit},
+    )
+
+
+def load_model_neighborhood(model_name, limit):
     query = """
     MATCH (m:Model {name: $model_name})-[r]->(n)
     RETURN m.name AS source,
@@ -176,10 +226,14 @@ def format_license_group_filter_label(group_id, license_group_metadata_by_id):
     return f"{group_id} — {group_metadata['name']}"
 
 
-def render_license_group_legend():
+def render_scrollable_dataframe(dataframe, data_view_height, **dataframe_kwargs):
+    st.dataframe(dataframe, height=data_view_height, **dataframe_kwargs)
+
+
+def render_license_group_legend(data_view_height):
     license_group_rows = get_license_group_metadata()
     with st.expander("License risk levels reference", expanded=False):
-        st.dataframe(
+        render_scrollable_dataframe(
             pd.DataFrame([
                 {
                     "Risk level": group["name"],
@@ -190,6 +244,7 @@ def render_license_group_legend():
                 "Risk level": "Unclassified",
                 "Compliance guidance": "License not mapped to a risk group yet.",
             }]),
+            min(data_view_height, 220),
             hide_index=True,
             use_container_width=True,
         )
@@ -201,7 +256,6 @@ CATALOG_DISPLAY_COLUMNS = [
     "task",
     "license",
     "risk_level",
-    "risk_guidance",
     "downloads",
     "hf_url",
     "license_link",
@@ -219,15 +273,14 @@ def build_catalog_dataframe(rows):
 
 def get_catalog_column_config():
     return {
-        "model": st.column_config.TextColumn("Model", width="large"),
-        "brand": st.column_config.TextColumn("Brand"),
-        "task": st.column_config.TextColumn("Task"),
-        "license": st.column_config.TextColumn("License ID"),
-        "risk_level": st.column_config.TextColumn("Risk level", width="medium"),
-        "risk_guidance": st.column_config.TextColumn("Compliance guidance", width="large"),
-        "downloads": st.column_config.NumberColumn("Downloads", format="%d"),
-        "hf_url": st.column_config.LinkColumn("HF", display_text="Open"),
-        "license_link": st.column_config.LinkColumn("License doc", display_text="Open"),
+        "model": st.column_config.TextColumn("Model", width="medium"),
+        "brand": st.column_config.TextColumn("Brand", width="small"),
+        "task": st.column_config.TextColumn("Task", width="small"),
+        "license": st.column_config.TextColumn("License", width="small"),
+        "risk_level": st.column_config.TextColumn("Risk", width="small"),
+        "downloads": st.column_config.NumberColumn("DL", format="%d", width="small"),
+        "hf_url": st.column_config.LinkColumn("HF", display_text="Open", width="small"),
+        "license_link": st.column_config.LinkColumn("Lic.", display_text="Open", width="small"),
     }
 
 
@@ -245,11 +298,14 @@ def build_styled_risk_rows_dataframe(risk_dataframe, display_columns, styled_col
     return display_dataframe.style.apply(style_risk_row, axis=1)
 
 
+CATALOG_STYLED_COLUMNS = ["model", "license", "risk_level"]
+
+
 def build_styled_catalog_dataframe(catalog_dataframe):
     return build_styled_risk_rows_dataframe(
         catalog_dataframe,
         CATALOG_DISPLAY_COLUMNS,
-        ["risk_level"],
+        CATALOG_STYLED_COLUMNS,
     )
 
 
@@ -283,8 +339,8 @@ def load_top_models_by_risk(limit=30):
     """, {"limit": limit})
 
 
-def render_mini_graph(center_model, edges):
-    net = Network(height="420px", width="100%", bgcolor="#ffffff", directed=True)
+def render_mini_graph(center_model, edges, data_view_height):
+    net = Network(height=f"{data_view_height}px", width="100%", bgcolor="#ffffff", directed=True)
     options = {
         "nodes": {"font": {"size": 14}},
         "edges": {"font": {"size": 10, "align": "middle"}},
@@ -308,23 +364,24 @@ def render_mini_graph(center_model, edges):
         graph_path = graph_file.name
     net.save_graph(graph_path)
     with open(graph_path, "r", encoding="utf-8") as graph_file:
-        components.html(graph_file.read(), height=440)
+        components.html(graph_file.read(), height=data_view_height, scrolling=True)
     os.remove(graph_path)
 
 
-def render_catalog_page():
-    st.header("📚 Model Catalog")
+def render_catalog_page(query_limit, data_view_height):
+    st.subheader("Model Catalog")
     st.caption("Search and filter models by license risk, task, and publisher.")
-    render_license_group_legend()
+    render_license_group_legend(data_view_height)
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    license_group_metadata_by_id = {
+        group["id"]: group for group in get_license_group_metadata()
+    }
+    group_options = get_license_groups() + ["UNKNOWN"]
+
+    search_col, risk_col, task_col, brand_col = st.columns(4)
+    with search_col:
         search = st.text_input("Search model", placeholder="e.g. Llama, bert, embedding")
-    with col2:
-        license_group_metadata_by_id = {
-            group["id"]: group for group in get_license_group_metadata()
-        }
-        group_options = get_license_groups() + ["UNKNOWN"]
+    with risk_col:
         selected_groups = st.multiselect(
             "Risk level",
             group_options,
@@ -333,53 +390,52 @@ def render_catalog_page():
                 group_id, license_group_metadata_by_id
             ),
         )
-    with col3:
-        limit = st.slider("Max results", 25, 500, 100)
-
-    col4, col5 = st.columns(2)
-    with col4:
+    with task_col:
         selected_tasks = st.multiselect("Task", get_tasks())
-    with col5:
+    with brand_col:
         selected_brands = st.multiselect("Brand", get_brands())
 
-    rows = load_model_catalog(search, selected_groups, selected_tasks, selected_brands, limit)
+    rows = load_model_catalog(search, selected_groups, selected_tasks, selected_brands, query_limit)
     if not rows:
         st.warning("No models match the current filters.")
         return
 
     df = build_catalog_dataframe(rows)
-    st.markdown(f"**{len(df)}** models — select a row or use the button below to open detail.")
+    model_names = df["model"].tolist()
+
+    st.markdown(
+        f"**{len(df)}** models — select a row, then open detail. "
+        "Full compliance guidance is shown in Model Detail."
+    )
 
     table_selection = st.dataframe(
         build_styled_catalog_dataframe(df),
         column_config=get_catalog_column_config(),
         hide_index=True,
         use_container_width=True,
+        height=data_view_height,
         on_select="rerun",
         selection_mode="single-row",
         key="catalog_table",
     )
 
-    model_names = df["model"].tolist()
-    default_model = st.session_state.get("detail_model")
-    default_index = model_names.index(default_model) if default_model in model_names else 0
-    selected_model = st.selectbox("Select model", model_names, index=default_index)
-
     if table_selection.selection.rows:
         selected_model = df.iloc[table_selection.selection.rows[0]]["model"]
+    elif st.session_state.get("detail_model") in model_names:
+        selected_model = st.session_state["detail_model"]
+    else:
+        selected_model = None
 
-    if st.button("View detail", type="primary"):
+    if st.button("View detail", type="primary", disabled=selected_model is None):
         st.session_state["detail_model"] = selected_model
-        st.session_state["mode"] = "Model Detail"
+        st.session_state["pending_mode"] = "Model Detail"
         st.rerun()
 
 
-def render_detail_page():
-    st.header("🔎 Model Detail")
+def render_detail_page(query_limit, data_view_height):
+    st.subheader("Model Detail")
 
-    models = [r["model"] for r in run_query(
-        "MATCH (m:Model) RETURN m.name AS model ORDER BY m.downloads DESC LIMIT 500"
-    )]
+    models = [row["model"] for row in load_top_model_names(query_limit)]
     default_model = st.session_state.get("detail_model")
     default_index = models.index(default_model) if default_model in models else 0
     model_name = st.selectbox("Select model", models, index=default_index)
@@ -419,16 +475,18 @@ def render_detail_page():
             st.link_button("Open license document", detail["license_link"])
 
     st.subheader("Neighborhood (1-hop)")
-    edges = load_model_neighborhood(model_name)
+    edges = load_model_neighborhood(model_name, query_limit)
     if edges:
-        st.dataframe(pd.DataFrame(edges), use_container_width=True)
-        render_mini_graph(model_name, edges)
+        render_scrollable_dataframe(
+            pd.DataFrame(edges), data_view_height, use_container_width=True
+        )
+        render_mini_graph(model_name, edges, data_view_height)
     else:
         st.info("No direct relationships found for this model.")
 
 
-def render_license_intelligence_page():
-    st.header("📊 License Intelligence")
+def render_license_intelligence_page(query_limit, data_view_height):
+    st.subheader("License Intelligence")
 
     group_rows = run_query("""
         MATCH (m:Model)-[:UNDER_LICENSE]->(l:License)
@@ -445,22 +503,23 @@ def render_license_intelligence_page():
         MATCH (m:Model)-[:UNDER_LICENSE]->(l:License)
         RETURN l.name AS license, count(m) AS models
         ORDER BY models DESC
-        LIMIT 15
-    """)
+        LIMIT $limit
+    """, {"limit": query_limit})
     if license_rows:
         st.subheader("Top licenses")
         st.bar_chart(pd.DataFrame(license_rows).set_index("license"))
 
-    top_models_by_risk = load_top_models_by_risk(limit=30)
+    top_models_by_risk = load_top_models_by_risk(limit=query_limit)
     if top_models_by_risk:
         st.subheader("Top models by license risk")
         top_models_dataframe = pd.DataFrame(top_models_by_risk)
-        st.dataframe(
+        render_scrollable_dataframe(
             build_styled_risk_rows_dataframe(
                 top_models_dataframe,
                 TOP_MODELS_BY_RISK_DISPLAY_COLUMNS,
                 TOP_MODELS_BY_RISK_STYLED_COLUMNS,
             ),
+            data_view_height,
             column_config={
                 "risk_level": st.column_config.TextColumn("Risk level", width="medium"),
                 "risk_guidance": st.column_config.TextColumn("Compliance guidance", width="large"),
@@ -479,42 +538,48 @@ def render_license_intelligence_page():
         MATCH (m:Model)-[:USED_DATASET]->(d:Dataset)
         RETURN d.name AS dataset, count(m) AS uses
         ORDER BY uses DESC
-        LIMIT 10
-    """)
+        LIMIT $limit
+    """, {"limit": query_limit})
     if dataset_rows:
         df_datasets = pd.DataFrame(dataset_rows)
         st.bar_chart(df_datasets.set_index("dataset"))
         ds_select = st.selectbox("Models using dataset", df_datasets["dataset"].tolist())
         if ds_select:
             model_rows = run_query(
-                "MATCH (m:Model)-[:USED_DATASET]->(d:Dataset {name: $ds}) RETURN m.name AS model ORDER BY m.downloads DESC LIMIT 50",
-                {"ds": ds_select},
+                """
+                MATCH (m:Model)-[:USED_DATASET]->(d:Dataset {name: $dataset_name})
+                RETURN m.name AS model
+                ORDER BY m.downloads DESC
+                LIMIT $limit
+                """,
+                {"dataset_name": ds_select, "limit": query_limit},
             )
-            st.dataframe(pd.DataFrame(model_rows), use_container_width=True)
+            render_scrollable_dataframe(
+                pd.DataFrame(model_rows), data_view_height, use_container_width=True
+            )
 
 
-def render_graph_explorer_page():
-    st.header("🕸️ Graph Explorer (advanced)")
+def render_graph_explorer_page(query_limit, data_view_height):
+    st.subheader("Graph Explorer")
     st.caption("Best for small, filtered subgraphs — not the full database.")
 
     search = st.text_input("Search model or related node:", placeholder="e.g. Llama")
-    limit = st.slider("Number of edges", 10, 100, 40)
     rel_types = [r["rel"] for r in run_query("CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType AS rel")]
     selected_rels = st.multiselect("Relationships", rel_types, default=rel_types[:6])
-
+    
     if search and selected_rels:
         results = run_query("""
-            MATCH (m:Model)-[r]->(target)
-            WHERE (toLower(m.name) CONTAINS toLower($s) OR toLower(target.name) CONTAINS toLower($s))
-              AND type(r) IN $rels
-            RETURN m.name AS model,
-                   coalesce(target.name, target.id) AS target_name,
-                   type(r) AS relation
-            LIMIT $limit
-        """, {"s": search, "rels": selected_rels, "limit": limit})
-
+        MATCH (m:Model)-[r]->(target)
+        WHERE (toLower(m.name) CONTAINS toLower($s) OR toLower(target.name) CONTAINS toLower($s))
+        AND type(r) IN $rels
+        RETURN m.name AS model, 
+               coalesce(target.name, target.id) AS target_name, 
+               type(r) AS relation
+        LIMIT $limit
+        """, {"s": search, "rels": selected_rels, "limit": query_limit})
+        
         if results:
-            net = Network(height="600px", width="100%", bgcolor="#ffffff", directed=True)
+            net = Network(height=f"{data_view_height}px", width="100%", bgcolor="#ffffff", directed=True)
             net.set_options(json.dumps({
                 "physics": {"enabled": True, "stabilization": {"iterations": 100}},
             }))
@@ -527,21 +592,47 @@ def render_graph_explorer_page():
                 graph_path = graph_file.name
             net.save_graph(graph_path)
             with open(graph_path, "r", encoding="utf-8") as graph_file:
-                components.html(graph_file.read(), height=620)
+                components.html(graph_file.read(), height=data_view_height, scrolling=True)
             os.remove(graph_path)
         else:
             st.warning("No relationships found.")
 
 
 # --- UI ---
-st.title("🌐 ModelRoot Pro")
+inject_app_styles()
 
 if "mode" not in st.session_state:
     st.session_state["mode"] = "Model Catalog"
 
+if st.session_state.get("pending_mode"):
+    st.session_state["mode"] = st.session_state.pop("pending_mode")
+
+st.sidebar.markdown("##### ModelRoot")
+
 mode_options = ["Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"]
 st.sidebar.radio("Mode", mode_options, key="mode")
 mode = st.session_state["mode"]
+
+if "query_limit" not in st.session_state:
+    st.session_state["query_limit"] = QUERY_LIMIT_DEFAULT
+
+query_limit = st.sidebar.slider(
+    "Max results",
+    min_value=QUERY_LIMIT_MIN,
+    max_value=QUERY_LIMIT_MAX,
+    key="query_limit",
+)
+
+if "data_view_height" not in st.session_state:
+    st.session_state["data_view_height"] = DATA_VIEW_HEIGHT_DEFAULT
+
+data_view_height = st.sidebar.slider(
+    "Table height (px)",
+    min_value=DATA_VIEW_HEIGHT_MIN,
+    max_value=DATA_VIEW_HEIGHT_MAX,
+    key="data_view_height",
+    help="Fixed layout height for tables and graphs. Use fullscreen on a table for more space.",
+)
 
 with st.sidebar.expander("Database snapshot"):
     snapshot = run_query("""
@@ -555,10 +646,10 @@ with st.sidebar.expander("Database snapshot"):
         st.metric("License groups", snapshot[0]["groups"])
 
 if mode == "Model Catalog":
-    render_catalog_page()
+    render_catalog_page(query_limit, data_view_height)
 elif mode == "Model Detail":
-    render_detail_page()
+    render_detail_page(query_limit, data_view_height)
 elif mode == "License Intelligence":
-    render_license_intelligence_page()
+    render_license_intelligence_page(query_limit, data_view_height)
 else:
-    render_graph_explorer_page()
+    render_graph_explorer_page(query_limit, data_view_height)
