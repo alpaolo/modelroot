@@ -1,6 +1,12 @@
+"""
+ModelRoot Streamlit app — catalog-first UX for license-aware model discovery.
+
+Modes: Model Catalog (default), Model Detail (1-hop graph), License Intelligence, Graph Explorer.
+"""
 import json
 import os
 import sys
+import tempfile
 
 import pandas as pd
 import streamlit as st
@@ -20,6 +26,8 @@ LICENSE_GROUP_COLORS = {
     "RED_COPYLEFT": "#a855f7",
     "RED_RESTRICTED": "#ef4444",
 }
+UNKNOWN_LICENSE_GROUP_COLOR = "#94a3b8"
+LICENSE_GROUP_CELL_STYLE = "color: white; font-weight: bold"
 
 RELATION_COLORS = {
     "UNDER_LICENSE": "#6366f1",
@@ -43,10 +51,16 @@ def run_query(query, params=None):
 
 
 @st.cache_data
+def get_license_group_metadata():
+    return run_query("""
+        MATCH (g:LicenseGroup)
+        RETURN g.id AS id, g.name AS name, g.compliance AS compliance
+        ORDER BY id
+    """)
+
+
 def get_license_groups():
-    return [r["group_id"] for r in run_query(
-        "MATCH (g:LicenseGroup) RETURN g.id AS group_id ORDER BY group_id"
-    )]
+    return [group["id"] for group in get_license_group_metadata()]
 
 
 @st.cache_data
@@ -63,11 +77,21 @@ def get_brands():
     )]
 
 
+def get_license_group_color(license_group_id):
+    return LICENSE_GROUP_COLORS.get(license_group_id, UNKNOWN_LICENSE_GROUP_COLOR)
+
+
+def build_license_group_cell_style(license_group_id):
+    return f"background-color: {get_license_group_color(license_group_id)}; {LICENSE_GROUP_CELL_STYLE}"
+
+
 def render_license_badge(group_id):
     if not group_id:
         return "—"
-    color = LICENSE_GROUP_COLORS.get(group_id, "#94a3b8")
-    return f'<span style="background:{color};color:white;padding:2px 8px;border-radius:4px;font-weight:600;">{group_id}</span>'
+    return (
+        f'<span style="background:{get_license_group_color(group_id)};'
+        f'{LICENSE_GROUP_CELL_STYLE};padding:2px 8px;border-radius:4px;">{group_id}</span>'
+    )
 
 
 def load_model_catalog(search, license_groups, tasks, brands, limit):
@@ -86,6 +110,8 @@ def load_model_catalog(search, license_groups, tasks, brands, limit):
            coalesce(t.name, '—') AS task,
            coalesce(l.name, 'unknown') AS license,
            coalesce(g.id, 'UNKNOWN') AS license_group,
+           coalesce(g.name, 'Unclassified') AS risk_level,
+           coalesce(g.compliance, 'License not mapped to a risk group yet.') AS risk_guidance,
            coalesce(m.downloads, 0) AS downloads,
            m.hf_url AS hf_url,
            m.license_link AS license_link
@@ -111,6 +137,8 @@ def load_model_detail(model_name):
     RETURN m.name AS model,
            coalesce(l.name, 'unknown') AS license,
            coalesce(g.id, 'UNKNOWN') AS license_group,
+           g.name AS license_group_name,
+           g.compliance AS license_group_compliance,
            coalesce(t.name, '—') AS task,
            coalesce(b.name, '—') AS brand,
            coalesce(m.downloads, 0) AS downloads,
@@ -139,6 +167,122 @@ def load_model_neighborhood(model_name, limit=25):
     return run_query(query, {"model_name": model_name, "limit": limit})
 
 
+def format_license_group_filter_label(group_id, license_group_metadata_by_id):
+    if group_id == "UNKNOWN":
+        return "UNKNOWN — No risk group assigned"
+    group_metadata = license_group_metadata_by_id.get(group_id)
+    if not group_metadata:
+        return group_id
+    return f"{group_id} — {group_metadata['name']}"
+
+
+def render_license_group_legend():
+    license_group_rows = get_license_group_metadata()
+    with st.expander("License risk levels reference", expanded=False):
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Risk level": group["name"],
+                    "Compliance guidance": group["compliance"],
+                }
+                for group in license_group_rows
+            ] + [{
+                "Risk level": "Unclassified",
+                "Compliance guidance": "License not mapped to a risk group yet.",
+            }]),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+CATALOG_DISPLAY_COLUMNS = [
+    "model",
+    "brand",
+    "task",
+    "license",
+    "risk_level",
+    "risk_guidance",
+    "downloads",
+    "hf_url",
+    "license_link",
+]
+
+
+def build_catalog_dataframe(rows):
+    catalog_dataframe = pd.DataFrame(rows)
+    catalog_dataframe["hf_url"] = catalog_dataframe.apply(
+        lambda row: row["hf_url"] or f"https://huggingface.co/{row['model']}",
+        axis=1,
+    )
+    return catalog_dataframe
+
+
+def get_catalog_column_config():
+    return {
+        "model": st.column_config.TextColumn("Model", width="large"),
+        "brand": st.column_config.TextColumn("Brand"),
+        "task": st.column_config.TextColumn("Task"),
+        "license": st.column_config.TextColumn("License ID"),
+        "risk_level": st.column_config.TextColumn("Risk level", width="medium"),
+        "risk_guidance": st.column_config.TextColumn("Compliance guidance", width="large"),
+        "downloads": st.column_config.NumberColumn("Downloads", format="%d"),
+        "hf_url": st.column_config.LinkColumn("HF", display_text="Open"),
+        "license_link": st.column_config.LinkColumn("License doc", display_text="Open"),
+    }
+
+
+def build_styled_risk_rows_dataframe(risk_dataframe, display_columns, styled_columns):
+    license_group_ids = risk_dataframe["license_group"]
+    display_dataframe = risk_dataframe[display_columns]
+
+    def style_risk_row(row):
+        row_styles = [""] * len(row)
+        cell_style = build_license_group_cell_style(license_group_ids.loc[row.name])
+        for column_name in styled_columns:
+            row_styles[row.index.get_loc(column_name)] = cell_style
+        return row_styles
+
+    return display_dataframe.style.apply(style_risk_row, axis=1)
+
+
+def build_styled_catalog_dataframe(catalog_dataframe):
+    return build_styled_risk_rows_dataframe(
+        catalog_dataframe,
+        CATALOG_DISPLAY_COLUMNS,
+        ["risk_level"],
+    )
+
+
+TOP_MODELS_BY_RISK_DISPLAY_COLUMNS = [
+    "risk_level",
+    "risk_guidance",
+    "model",
+    "brand",
+    "license",
+    "downloads",
+    "hf_url",
+]
+TOP_MODELS_BY_RISK_STYLED_COLUMNS = ["risk_level", "risk_guidance", "model"]
+
+
+def load_top_models_by_risk(limit=30):
+    return run_query("""
+        MATCH (m:Model)-[:UNDER_LICENSE]->(l:License)
+        OPTIONAL MATCH (l)-[:BELONGS_TO]->(g:LicenseGroup)
+        OPTIONAL MATCH (m)-[:PUBLISHED_BY]->(b:MainBrand)
+        RETURN coalesce(g.id, 'UNKNOWN') AS license_group,
+               coalesce(g.name, 'Unclassified') AS risk_level,
+               coalesce(g.compliance, 'License not mapped to a risk group yet.') AS risk_guidance,
+               m.name AS model,
+               coalesce(b.name, '—') AS brand,
+               coalesce(l.name, 'unknown') AS license,
+               coalesce(m.downloads, 0) AS downloads,
+               coalesce(m.hf_url, 'https://huggingface.co/' + m.name) AS hf_url
+        ORDER BY m.downloads DESC
+        LIMIT $limit
+    """, {"limit": limit})
+
+
 def render_mini_graph(center_model, edges):
     net = Network(height="420px", width="100%", bgcolor="#ffffff", directed=True)
     options = {
@@ -160,20 +304,35 @@ def render_mini_graph(center_model, edges):
             net.add_node(target, label=target, color=color, size=14)
         net.add_edge(source, target, label=relation.replace("_", " "), color=color, arrows="to")
 
-    net.save_graph("graph.html")
-    with open("graph.html", "r", encoding="utf-8") as graph_file:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as graph_file:
+        graph_path = graph_file.name
+    net.save_graph(graph_path)
+    with open(graph_path, "r", encoding="utf-8") as graph_file:
         components.html(graph_file.read(), height=440)
+    os.remove(graph_path)
 
 
 def render_catalog_page():
     st.header("📚 Model Catalog")
     st.caption("Search and filter models by license risk, task, and publisher.")
+    render_license_group_legend()
 
     col1, col2, col3 = st.columns(3)
     with col1:
         search = st.text_input("Search model", placeholder="e.g. Llama, bert, embedding")
     with col2:
-        selected_groups = st.multiselect("License group", get_license_groups(), default=[])
+        license_group_metadata_by_id = {
+            group["id"]: group for group in get_license_group_metadata()
+        }
+        group_options = get_license_groups() + ["UNKNOWN"]
+        selected_groups = st.multiselect(
+            "Risk level",
+            group_options,
+            default=[],
+            format_func=lambda group_id: format_license_group_filter_label(
+                group_id, license_group_metadata_by_id
+            ),
+        )
     with col3:
         limit = st.slider("Max results", 25, 500, 100)
 
@@ -188,21 +347,27 @@ def render_catalog_page():
         st.warning("No models match the current filters.")
         return
 
-    df = pd.DataFrame(rows)
-    st.markdown(
-        f"**{len(df)}** models — click HF to open the model card on Hugging Face.",
-        unsafe_allow_html=True,
+    df = build_catalog_dataframe(rows)
+    st.markdown(f"**{len(df)}** models — select a row or use the button below to open detail.")
+
+    table_selection = st.dataframe(
+        build_styled_catalog_dataframe(df),
+        column_config=get_catalog_column_config(),
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="catalog_table",
     )
 
-    display_df = df.copy()
-    display_df["license_group"] = display_df["license_group"].apply(
-        lambda g: render_license_badge(g)
-    )
-    st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-    st.subheader("Open model detail")
     model_names = df["model"].tolist()
-    selected_model = st.selectbox("Select model", model_names)
+    default_model = st.session_state.get("detail_model")
+    default_index = model_names.index(default_model) if default_model in model_names else 0
+    selected_model = st.selectbox("Select model", model_names, index=default_index)
+
+    if table_selection.selection.rows:
+        selected_model = df.iloc[table_selection.selection.rows[0]]["model"]
+
     if st.button("View detail", type="primary"):
         st.session_state["detail_model"] = selected_model
         st.session_state["mode"] = "Model Detail"
@@ -212,26 +377,33 @@ def render_catalog_page():
 def render_detail_page():
     st.header("🔎 Model Detail")
 
-    model_name = st.session_state.get("detail_model")
-    if not model_name:
-        models = [r["model"] for r in run_query(
-            "MATCH (m:Model) RETURN m.name AS model ORDER BY m.downloads DESC LIMIT 200"
-        )]
-        model_name = st.selectbox("Select model", models)
+    models = [r["model"] for r in run_query(
+        "MATCH (m:Model) RETURN m.name AS model ORDER BY m.downloads DESC LIMIT 500"
+    )]
+    default_model = st.session_state.get("detail_model")
+    default_index = models.index(default_model) if default_model in models else 0
+    model_name = st.selectbox("Select model", models, index=default_index)
+    st.session_state["detail_model"] = model_name
 
     detail = load_model_detail(model_name)
     if not detail:
         st.error("Model not found.")
         return
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         st.metric("Downloads", f"{detail['downloads']:,}")
     with c2:
-        st.markdown("License group", unsafe_allow_html=True)
-        st.markdown(render_license_badge(detail["license_group"]), unsafe_allow_html=True)
-    with c3:
         st.write("License", detail["license"])
+
+    if detail["license_group"] == "UNKNOWN":
+        st.info("This license is not mapped to a risk group yet.")
+    else:
+        st.markdown(render_license_badge(detail["license_group"]), unsafe_allow_html=True)
+        if detail.get("license_group_name"):
+            st.markdown(f"**{detail['license_group_name']}**")
+        if detail.get("license_group_compliance"):
+            st.caption(detail["license_group_compliance"])
 
     st.write("Brand", detail["brand"])
     st.write("Task", detail["task"])
@@ -278,6 +450,29 @@ def render_license_intelligence_page():
     if license_rows:
         st.subheader("Top licenses")
         st.bar_chart(pd.DataFrame(license_rows).set_index("license"))
+
+    top_models_by_risk = load_top_models_by_risk(limit=30)
+    if top_models_by_risk:
+        st.subheader("Top models by license risk")
+        top_models_dataframe = pd.DataFrame(top_models_by_risk)
+        st.dataframe(
+            build_styled_risk_rows_dataframe(
+                top_models_dataframe,
+                TOP_MODELS_BY_RISK_DISPLAY_COLUMNS,
+                TOP_MODELS_BY_RISK_STYLED_COLUMNS,
+            ),
+            column_config={
+                "risk_level": st.column_config.TextColumn("Risk level", width="medium"),
+                "risk_guidance": st.column_config.TextColumn("Compliance guidance", width="large"),
+                "model": st.column_config.TextColumn("Model", width="large"),
+                "brand": st.column_config.TextColumn("Brand"),
+                "license": st.column_config.TextColumn("License ID"),
+                "downloads": st.column_config.NumberColumn("Downloads", format="%d"),
+                "hf_url": st.column_config.LinkColumn("HF", display_text="Open"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.subheader("Top datasets by usage")
     dataset_rows = run_query("""
@@ -328,9 +523,12 @@ def render_graph_explorer_page():
                 net.add_node(row["model"], label=row["model"], color="#FF4B4B")
                 net.add_node(row["target_name"], label=row["target_name"], color=rel_color)
                 net.add_edge(row["model"], row["target_name"], label=row["relation"], color=rel_color, arrows="to")
-            net.save_graph("graph.html")
-            with open("graph.html", "r", encoding="utf-8") as graph_file:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as graph_file:
+                graph_path = graph_file.name
+            net.save_graph(graph_path)
+            with open(graph_path, "r", encoding="utf-8") as graph_file:
                 components.html(graph_file.read(), height=620)
+            os.remove(graph_path)
         else:
             st.warning("No relationships found.")
 
@@ -341,12 +539,24 @@ st.title("🌐 ModelRoot Pro")
 if "mode" not in st.session_state:
     st.session_state["mode"] = "Model Catalog"
 
+mode_options = ["Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"]
 mode = st.sidebar.radio(
     "Mode",
-    ["Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"],
-    index=["Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"].index(st.session_state["mode"]),
+    mode_options,
+    index=mode_options.index(st.session_state["mode"]),
 )
 st.session_state["mode"] = mode
+
+with st.sidebar.expander("Database snapshot"):
+    snapshot = run_query("""
+        MATCH (m:Model) WITH count(m) AS models
+        MATCH (l:License) WITH models, count(l) AS licenses
+        MATCH (g:LicenseGroup) RETURN models, licenses, count(g) AS groups
+    """)
+    if snapshot:
+        st.metric("Models", f"{snapshot[0]['models']:,}")
+        st.metric("Licenses", f"{snapshot[0]['licenses']:,}")
+        st.metric("License groups", snapshot[0]["groups"])
 
 if mode == "Model Catalog":
     render_catalog_page()
