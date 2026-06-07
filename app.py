@@ -128,12 +128,17 @@ def build_license_group_cell_style(license_group_id):
     return f"background-color: {get_license_group_color(license_group_id)}; {LICENSE_GROUP_CELL_STYLE}"
 
 
-def render_license_badge(group_id):
-    if not group_id:
-        return "—"
+def render_license_with_risk(license_name, license_group_id, risk_label):
+    if not license_group_id or license_group_id == "UNKNOWN":
+        risk_display = risk_label or "Unclassified"
+        badge_color = UNKNOWN_LICENSE_GROUP_COLOR
+    else:
+        risk_display = risk_label or license_group_id
+        badge_color = get_license_group_color(license_group_id)
+    license_risk_text = f"{license_name} ({risk_display})"
     return (
-        f'<span style="background:{get_license_group_color(group_id)};'
-        f'{LICENSE_GROUP_CELL_STYLE};padding:2px 8px;border-radius:4px;">{group_id}</span>'
+        f'<span style="background:{badge_color};'
+        f'{LICENSE_GROUP_CELL_STYLE};padding:2px 8px;border-radius:4px;">{license_risk_text}</span>'
     )
 
 
@@ -200,21 +205,78 @@ def load_top_model_names(limit):
 
 
 def load_model_neighborhood(model_name, limit):
-    query = """
-    MATCH (m:Model {name: $model_name})-[r]->(n)
-    RETURN m.name AS source,
-           coalesce(n.name, n.id) AS target,
-           labels(n)[0] AS target_type,
-           type(r) AS relation
-    UNION
-    MATCH (n)-[r]->(m:Model {name: $model_name})
-    RETURN coalesce(n.name, n.id) AS source,
-           m.name AS target,
-           labels(n)[0] AS target_type,
-           type(r) AS relation
-    LIMIT $limit
-    """
-    return run_query(query, {"model_name": model_name, "limit": limit})
+    return run_query(
+        """
+        MATCH (m:Model {name: $model_name})-[r]->(n)
+        RETURN type(r) AS relation,
+               coalesce(n.name, n.id) AS entity,
+               labels(n)[0] AS entity_type,
+               CASE
+                   WHEN labels(n)[0] = 'Paper'
+                   THEN coalesce(n.url, 'https://arxiv.org/abs/' + n.id)
+                   ELSE null
+               END AS entity_url,
+               m.name AS source,
+               coalesce(n.name, n.id) AS target,
+               'out' AS direction
+        UNION
+        MATCH (n)-[r]->(m:Model {name: $model_name})
+        RETURN type(r) AS relation,
+               coalesce(n.name, n.id) AS entity,
+               labels(n)[0] AS entity_type,
+               CASE
+                   WHEN labels(n)[0] = 'Paper'
+                   THEN coalesce(n.url, 'https://arxiv.org/abs/' + n.id)
+                   ELSE null
+               END AS entity_url,
+               coalesce(n.name, n.id) AS source,
+               m.name AS target,
+               'in' AS direction
+        LIMIT $limit
+        """,
+        {"model_name": model_name, "limit": limit},
+    )
+
+
+def format_relation_label(relation):
+    return relation.replace("_", " ").title()
+
+
+def filter_derivative_model_edges(neighborhood_edges, hide_derivative_models):
+    if not hide_derivative_models:
+        return neighborhood_edges
+    return [
+        edge
+        for edge in neighborhood_edges
+        if not (
+            edge["relation"] == "DERIVED_FROM"
+            and edge["direction"] == "in"
+            and edge["entity_type"] == "Model"
+        )
+    ]
+
+
+def get_neighborhood_column_config():
+    return {
+        "Relation": st.column_config.TextColumn("Relation", width="small"),
+        "Entity": st.column_config.TextColumn("Entity", width="medium"),
+        "Type": st.column_config.TextColumn("Type", width="small"),
+        "Link": st.column_config.LinkColumn("Link", display_text="Open", width="small"),
+    }
+
+
+def build_neighborhood_display_dataframe(neighborhood_edges):
+    return pd.DataFrame(
+        [
+            {
+                "Relation": format_relation_label(edge["relation"]),
+                "Entity": edge["entity"],
+                "Type": edge["entity_type"],
+                "Link": edge.get("entity_url"),
+            }
+            for edge in neighborhood_edges
+        ]
+    )
 
 
 def format_license_group_filter_label(group_id, license_group_metadata_by_id):
@@ -369,8 +431,8 @@ def render_mini_graph(center_model, edges, data_view_height):
 
 
 def render_catalog_page(query_limit, data_view_height):
-    st.subheader("Model Catalog")
-    st.caption("Search and filter models by license risk, task, and publisher.")
+    st.markdown("###### Model Catalog ######")
+    st.markdown("###### Search and filter models by license risk, task, and publisher. ######")
     render_license_group_legend(data_view_height)
 
     license_group_metadata_by_id = {
@@ -403,10 +465,22 @@ def render_catalog_page(query_limit, data_view_height):
     df = build_catalog_dataframe(rows)
     model_names = df["model"].tolist()
 
+    if st.session_state.get("catalog_selected_model") in model_names:
+        selected_model = st.session_state["catalog_selected_model"]
+    elif st.session_state.get("detail_model") in model_names:
+        selected_model = st.session_state["detail_model"]
+    else:
+        selected_model = None
+
     st.markdown(
         f"**{len(df)}** models — select a row, then open detail. "
         "Full compliance guidance is shown in Model Detail."
     )
+
+    if st.button("View detail", type="primary", disabled=selected_model is None):
+        st.session_state["detail_model"] = selected_model
+        st.session_state["pending_mode"] = "Model Detail"
+        st.rerun()
 
     table_selection = st.dataframe(
         build_styled_catalog_dataframe(df),
@@ -420,16 +494,7 @@ def render_catalog_page(query_limit, data_view_height):
     )
 
     if table_selection.selection.rows:
-        selected_model = df.iloc[table_selection.selection.rows[0]]["model"]
-    elif st.session_state.get("detail_model") in model_names:
-        selected_model = st.session_state["detail_model"]
-    else:
-        selected_model = None
-
-    if st.button("View detail", type="primary", disabled=selected_model is None):
-        st.session_state["detail_model"] = selected_model
-        st.session_state["pending_mode"] = "Model Detail"
-        st.rerun()
+        st.session_state["catalog_selected_model"] = df.iloc[table_selection.selection.rows[0]]["model"]
 
 
 def render_detail_page(query_limit, data_view_height):
@@ -450,18 +515,22 @@ def render_detail_page(query_limit, data_view_height):
     with c1:
         st.metric("Downloads", f"{detail['downloads']:,}")
     with c2:
-        st.write("License", detail["license"])
+        st.write("Brand", detail["brand"])
 
+    st.markdown("**License**")
+    st.markdown(
+        render_license_with_risk(
+            detail["license"],
+            detail["license_group"],
+            detail.get("license_group_name"),
+        ),
+        unsafe_allow_html=True,
+    )
     if detail["license_group"] == "UNKNOWN":
-        st.info("This license is not mapped to a risk group yet.")
-    else:
-        st.markdown(render_license_badge(detail["license_group"]), unsafe_allow_html=True)
-        if detail.get("license_group_name"):
-            st.markdown(f"**{detail['license_group_name']}**")
-        if detail.get("license_group_compliance"):
-            st.caption(detail["license_group_compliance"])
+        st.caption("This license is not mapped to a risk group yet.")
+    elif detail.get("license_group_compliance"):
+        st.caption(detail["license_group_compliance"])
 
-    st.write("Brand", detail["brand"])
     st.write("Task", detail["task"])
 
     link_col1, link_col2 = st.columns(2)
@@ -474,13 +543,25 @@ def render_detail_page(query_limit, data_view_height):
         if detail.get("license_link"):
             st.link_button("Open license document", detail["license_link"])
 
-    st.subheader("Neighborhood (1-hop)")
-    edges = load_model_neighborhood(model_name, query_limit)
-    if edges:
+    st.subheader("Related entities (1-hop)")
+    st.caption(f"Center: {model_name}")
+    neighborhood_edges = load_model_neighborhood(model_name, query_limit)
+    hide_derivative_models = st.checkbox(
+        "Hide derivative models (GGUF/forks)",
+        value=True,
+        help="Hides incoming DERIVED_FROM links from quantized or repackaged forks.",
+    )
+    visible_neighborhood_edges = filter_derivative_model_edges(
+        neighborhood_edges, hide_derivative_models
+    )
+    if visible_neighborhood_edges:
         render_scrollable_dataframe(
-            pd.DataFrame(edges), data_view_height, use_container_width=True
+            build_neighborhood_display_dataframe(visible_neighborhood_edges),
+            data_view_height,
+            column_config=get_neighborhood_column_config(),
+            use_container_width=True,
         )
-        render_mini_graph(model_name, edges, data_view_height)
+        render_mini_graph(model_name, visible_neighborhood_edges, data_view_height)
     else:
         st.info("No direct relationships found for this model.")
 
@@ -600,7 +681,7 @@ def render_graph_explorer_page(query_limit, data_view_height):
 
 # --- UI ---
 inject_app_styles()
-
+st.markdown("##### AI Lineage & Compliance Knowledge Graph. #####") 
 if "mode" not in st.session_state:
     st.session_state["mode"] = "Model Catalog"
 
@@ -608,6 +689,8 @@ if st.session_state.get("pending_mode"):
     st.session_state["mode"] = st.session_state.pop("pending_mode")
 
 st.sidebar.markdown("##### ModelRoot")
+st.sidebar.markdown("##### AI Lineage & Compliance Knowledge Graph. #####") 
+ 
 
 mode_options = ["Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"]
 st.sidebar.radio("Mode", mode_options, key="mode")
@@ -653,3 +736,4 @@ elif mode == "License Intelligence":
     render_license_intelligence_page(query_limit, data_view_height)
 else:
     render_graph_explorer_page(query_limit, data_view_height)
+
