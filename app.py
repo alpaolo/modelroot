@@ -540,12 +540,8 @@ if "mode" not in st.session_state:
     st.session_state["mode"] = "Model Catalog"
 
 mode_options = ["Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"]
-mode = st.sidebar.radio(
-    "Mode",
-    mode_options,
-    index=mode_options.index(st.session_state["mode"]),
-)
-st.session_state["mode"] = mode
+st.sidebar.radio("Mode", mode_options, key="mode")
+mode = st.session_state["mode"]
 
 with st.sidebar.expander("Database snapshot"):
     snapshot = run_query("""
