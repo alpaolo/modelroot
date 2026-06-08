@@ -1,0 +1,29 @@
+---
+description: When the user prefixes with "Sono certo:", treat their statement as ground truth and act on it.
+alwaysApply: true
+---
+
+# Sono certo — fatti dell'utente
+
+When the user writes **"Sono certo:"** (anywhere in the prompt), the statement that follows is **ground truth** for this session.
+
+## Required behavior
+
+1. **Accept it** — do not contradict, re-litigate, or "well actually" against their claim.
+2. **Do not** cite docs, defaults, or assumptions to override what they reported from runtime/UI unless they ask for investigation *after* applying their fact.
+3. **Act on it** — next steps (code, explanation, debug) must start from what they said, not from what you think the API "should" do.
+4. **If unsure what to do** — ask one short clarifying question; do not argue the fact itself.
+
+## Examples
+
+- User: `Sono certo: display_text="Entity" mostra la parola Entity in ogni cella`
+  - ✅ Fix using URL `#fragment` + regex, or another approach that matches their observation.
+  - ❌ Insist that `display_text` references a column name without verifying in their environment.
+
+- User: `Sono certo: il dropdown non cambia al primo click`
+  - ✅ Trace session state / widget order from that symptom.
+  - ❌ Explain that it "should work in one click" per generic Streamlit docs.
+
+## Scope
+
+Applies to behavior they observed (UI, runtime, tools, their codebase). Does not replace verification for security, secrets, or destructive git operations unless they explicitly include those under "Sono certo:".
