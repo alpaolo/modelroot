@@ -1,0 +1,36 @@
+---
+description: How to organize ModelRoot constants — UI, Cypher queries, and large URL mappings.
+alwaysApply: true
+---
+
+# ModelRoot constants layout
+
+## File roles
+
+| File | Purpose |
+|---|---|
+| `constants/app_constants.py` | UI only: colors, column layouts, small config dicts, query limits |
+| `constants/query.py` | Neo4j Cypher strings — suffix `_CYPHER` (e.g. `MODEL_CATALOG_CYPHER`) |
+| `constants/brand_urls.json` | Large static mappings (2363+ brand → HF org URL) |
+| `constants/brand_urls.py` | Thin loader: exposes `BRAND_HF_URLS` from JSON |
+| `constants/__init__.py` | Re-exports; must include explicit `from constants.brand_urls import BRAND_HF_URLS` |
+
+## Rules
+
+1. **Never put thousand-entry dicts in `app_constants.py`** — keep it under ~200 lines.
+2. **Large mappings → JSON + loader module**, not a giant `.py` literal.
+3. **Cypher queries** always named `*_CYPHER` in `query.py`.
+4. **`constants/__init__.py`**: use explicit imports for large/critical symbols; do not rely only on `import *` for voluminous data.
+5. **`app.py` imports `BRAND_HF_URLS`** via `from constants.brand_urls import BRAND_HF_URLS` (direct, reliable).
+
+## Streamlit LinkColumn display text
+
+- `display_text` is **literal or regex on the URL**, not another column name.
+- Pattern: append `#label` to URL, extract with `display_text=r".*#(.*)$"`.
+- When resolving links: change **URL only**; keep the displayed label unchanged.
+
+## Regenerating brand URLs
+
+Derive HF org slug from Neo4j `m.hf_url` / `m.name` (`org/model`).
+Add manual aliases for display names (e.g. `"Meta / Facebook"` → `facebook`).
+Write output to `constants/brand_urls.json`, not into `app_constants.py`.
