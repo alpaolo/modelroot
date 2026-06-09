@@ -7,7 +7,7 @@ Detail: Find model searches all Model nodes in Neo4j; radio lists all matching v
 Graph Explorer: find field + in-memory match list (detail_model).
 Sidebar query_limit controls LIMIT on list/graph queries across all modes.
 Sidebar data_view_height sets native st.dataframe / graph iframe height in pixels.
-Fixed main chrome: 10vh header + 10vh footer in center column only (sidebar unchanged).
+Fixed main chrome: 5vh header + 5vh footer in center column only (sidebar unchanged).
 Minimal header: ModelRoot label in sidebar; mode title in fixed main header (no emoji).
 UI constants (colors, columns, license URLs) live in constants/app_constants.py.
 Main chrome layout constants live in app.py (center-column header/footer).
@@ -83,7 +83,12 @@ from constants.app_constants import (
     DATA_VIEW_HEIGHT_DEFAULT,
     DATA_VIEW_HEIGHT_MAX,
     DATA_VIEW_HEIGHT_MIN,
+    DATAFRAME_BRAND_COLUMN_WIDTH_PX,
+    DATAFRAME_LICENSE_COLUMN_WIDTH_PX,
+    DATAFRAME_MODEL_COLUMN_WIDTH_PX,
     DATAFRAME_PLACEHOLDER,
+    DATAFRAME_RISK_COLUMN_WIDTH_PX,
+    DATAFRAME_TASK_COLUMN_WIDTH_PX,
     DEFAULT_RELATION_COLOR,
     GRAPH_BACKGROUND_COLOR,
     GRAPH_EXPLORER_DEFAULT_REL_LIMIT,
@@ -115,8 +120,8 @@ NEO4J_AUTH = env.NEO4J_AUTH
 _GRAPH_CANVAS_HEIGHT_TRIM_PX = 18
 
 # Main chrome layout (center column only; kept in app.py to avoid deploy/import drift)
-MAIN_CHROME_HEADER_HEIGHT_VH = 10
-MAIN_CHROME_FOOTER_HEIGHT_VH = 10
+MAIN_CHROME_HEADER_HEIGHT_VH = 5
+MAIN_CHROME_FOOTER_HEIGHT_VH = 5
 MAIN_CHROME_STREAMLIT_HEADER_OFFSET_REM = 3.75
 MAIN_CHROME_SIDEBAR_WIDTH_REM = 21
 MAIN_CHROME_SIDEBAR_COLLAPSED_WIDTH_REM = 2.875
@@ -128,6 +133,9 @@ MAIN_CHROME_FOOTER_DISCLAIMER = (
 )
 MAIN_CHROME_FOOTER_DATA_SOURCES = "Data: Neo4j graph · Hugging Face · Open LLM Leaderboard"
 MAIN_CONTENT_BASE_FONT_REM = 0.875
+DATAFRAME_ZOOM = 0.92
+DATAFRAME_ROW_HEIGHT_PX = 34
+DATAFRAME_SCALE_BOTTOM_TRIM_REM = 1.75
 DETAIL_MODEL_BAR_HEIGHT_REM = 2.25
 
 st.set_page_config(layout="wide", page_title="ModelRoot")
@@ -171,13 +179,13 @@ def inject_app_styles(show_detail_model_bar=False):
         .modelroot-main-header {{
             top: {MAIN_CHROME_STREAMLIT_HEADER_OFFSET_REM}rem;
             height: {MAIN_CHROME_HEADER_HEIGHT_VH}vh;
-            min-height: 3rem;
+            min-height: 2rem;
             border-bottom: 1px solid {MAIN_CHROME_BORDER_COLOR};
         }}
         .modelroot-main-footer {{
             bottom: 0;
             height: {MAIN_CHROME_FOOTER_HEIGHT_VH}vh;
-            min-height: 3rem;
+            min-height: 2rem;
             border-top: 1px solid {MAIN_CHROME_BORDER_COLOR};
         }}
         .modelroot-detail-model-bar {{
@@ -312,8 +320,13 @@ def inject_app_styles(show_detail_model_bar=False):
         section[data-testid="stMain"] button {{
             font-size: 0.82rem;
         }}
+        /* Glide grid is canvas-based: scale shrinks text; centered top origin = equal side margins. */
         section[data-testid="stMain"] div[data-testid="stDataFrame"] {{
-            font-size: 0.75rem;
+            width: 100% !important;
+            max-width: 100% !important;
+            transform: scale({DATAFRAME_ZOOM});
+            transform-origin: center top;
+            margin-bottom: -{DATAFRAME_SCALE_BOTTOM_TRIM_REM}rem !important;
         }}
         .modelroot-benchmark-suite {{
             border: 2px solid {BENCHMARK_PANEL_BORDER_COLOR};
@@ -812,6 +825,41 @@ def prepare_dataframe_link_columns(dataframe, link_column_names):
     return prepared_dataframe
 
 
+def get_model_text_column(column_label="Model"):
+    return st.column_config.TextColumn(
+        column_label,
+        width=DATAFRAME_MODEL_COLUMN_WIDTH_PX,
+    )
+
+
+def get_license_text_column(column_label="License"):
+    return st.column_config.TextColumn(
+        column_label,
+        width=DATAFRAME_LICENSE_COLUMN_WIDTH_PX,
+    )
+
+
+def get_task_text_column(column_label="Task"):
+    return st.column_config.TextColumn(
+        column_label,
+        width=DATAFRAME_TASK_COLUMN_WIDTH_PX,
+    )
+
+
+def get_brand_text_column(column_label="Brand"):
+    return st.column_config.TextColumn(
+        column_label,
+        width=DATAFRAME_BRAND_COLUMN_WIDTH_PX,
+    )
+
+
+def get_risk_text_column(column_label="Risk"):
+    return st.column_config.TextColumn(
+        column_label,
+        width=DATAFRAME_RISK_COLUMN_WIDTH_PX,
+    )
+
+
 def get_hf_link_column():
     return st.column_config.LinkColumn("HF link", display_text=LINK_COLUMN_DISPLAY_TEXT, width="small")
 
@@ -891,7 +939,6 @@ def render_model_neighborhood_table(neighborhood_edges, data_view_height):
                 width="large",
             ),
         },
-        use_container_width=True,
     )
 
 
@@ -906,6 +953,9 @@ def format_license_group_filter_label(group_id, license_group_metadata_by_id):
 
 def render_scrollable_dataframe(dataframe, data_view_height, **dataframe_kwargs):
     dataframe_kwargs.setdefault("placeholder", DATAFRAME_PLACEHOLDER)
+    dataframe_kwargs.setdefault("width", "stretch")
+    dataframe_kwargs.setdefault("row_height", DATAFRAME_ROW_HEIGHT_PX)
+    dataframe_kwargs.pop("use_container_width", None)
     st.dataframe(dataframe, height=data_view_height, **dataframe_kwargs)
 
 
@@ -922,7 +972,6 @@ def render_license_group_legend(data_view_height):
             ] + [UNCLASSIFIED_LICENSE_GROUP_LEGEND]),
             min(data_view_height, 220),
             hide_index=True,
-            use_container_width=True,
         )
 
 
@@ -933,12 +982,12 @@ def build_catalog_dataframe(rows):
 
 def get_catalog_column_config():
     return {
-        "model": st.column_config.TextColumn("Model", width="large"),
-        "brand": st.column_config.TextColumn("Brand", width="small"),
-        "task": st.column_config.TextColumn("Task", width="small"),
+        "model": get_model_text_column(),
+        "brand": get_brand_text_column(),
+        "task": get_task_text_column(),
         "benchmark": st.column_config.TextColumn("Benchmark", width="small"),
-        "license": st.column_config.TextColumn("License", width="small"),
-        "risk_level": st.column_config.TextColumn("Risk", width="medium"),
+        "license": get_license_text_column(),
+        "risk_level": get_risk_text_column(),
         "downloads": st.column_config.NumberColumn("DL", format="%d", width="small"),
         "hf_url": get_hf_link_column(),
         "license_link": get_license_link_column(),
@@ -1021,7 +1070,6 @@ def render_mini_graph(center_model, edges, data_view_height):
 
 
 def render_catalog_page(query_limit, data_view_height):
-    st.markdown("##### Model Catalog")
     st.caption("Search and filter models by license risk, task, and publisher.")
     render_license_group_legend(data_view_height)
 
@@ -1082,17 +1130,13 @@ def render_catalog_page(query_limit, data_view_height):
     df = build_catalog_dataframe(rows)
     model_names = df["model"].tolist()
 
-    st.markdown(
-        f"**{len(df)}** models — filter above, select a table row, then open detail. "
-        "Full compliance guidance is shown in Model Detail."
-    )
-
     table_selection = st.dataframe(
         build_styled_catalog_dataframe(df),
         column_config=get_catalog_column_config(),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         height=data_view_height,
+        row_height=DATAFRAME_ROW_HEIGHT_PX,
         placeholder=DATAFRAME_PLACEHOLDER,
         on_select="rerun",
         selection_mode="single-row",
@@ -1106,11 +1150,18 @@ def render_catalog_page(query_limit, data_view_height):
     elif st.session_state.get("detail_model") in model_names:
         selected_model = st.session_state["detail_model"]
 
-    if st.button("View detail", type="primary", disabled=selected_model is None):
-        st.session_state["detail_model"] = selected_model
-        st.session_state["pending_mode"] = "Model Detail"
-        clear_detail_search_session_state()
-        st.rerun()
+    catalog_summary_col, catalog_action_col = st.columns([5, 1], vertical_alignment="bottom")
+    with catalog_summary_col:
+        st.caption(
+            f"{len(df)} models — select a table row. "
+            "Compliance guidance is in Model Detail."
+        )
+    with catalog_action_col:
+        if st.button("View detail", type="primary", disabled=selected_model is None):
+            st.session_state["detail_model"] = selected_model
+            st.session_state["pending_mode"] = "Model Detail"
+            clear_detail_search_session_state()
+            st.rerun()
 
 
 def render_detail_page_body(model_name, query_limit, data_view_height):
@@ -1196,12 +1247,11 @@ def render_detail_page_body(model_name, query_limit, data_view_height):
                 derived_models_dataframe,
                 data_view_height,
                 column_config={
-                    "model": st.column_config.TextColumn("Model", width="large"),
+                    "model": get_model_text_column(),
                     "downloads": st.column_config.NumberColumn("Downloads", format="%d"),
-                    "license": st.column_config.TextColumn("License", width="small"),
+                    "license": get_license_text_column(),
                     "hf_url": get_hf_link_column(),
                 },
-                use_container_width=True,
                 hide_index=True,
             )
         else:
@@ -1244,15 +1294,14 @@ def render_license_intelligence_page(query_limit, data_view_height):
             ),
             data_view_height,
             column_config={
-                "risk_level": st.column_config.TextColumn("Risk level", width="medium"),
+                "risk_level": get_risk_text_column("Risk level"),
                 "risk_guidance": st.column_config.TextColumn("Compliance guidance", width="large"),
-                "model": st.column_config.TextColumn("Model", width="large"),
-                "brand": st.column_config.TextColumn("Brand"),
-                "license": st.column_config.TextColumn("License ID"),
+                "model": get_model_text_column(),
+                "brand": st.column_config.TextColumn("Brand", width="medium"),
+                "license": get_license_text_column("License ID"),
                 "downloads": st.column_config.NumberColumn("Downloads", format="%d"),
                 "hf_url": get_hf_link_column(),
             },
-            use_container_width=True,
             hide_index=True,
         )
 
@@ -1267,9 +1316,7 @@ def render_license_intelligence_page(query_limit, data_view_height):
                 MODELS_USING_DATASET_CYPHER,
                 {"dataset_name": ds_select, "limit": query_limit},
             )
-            render_scrollable_dataframe(
-                pd.DataFrame(model_rows), data_view_height, use_container_width=True
-            )
+            render_scrollable_dataframe(pd.DataFrame(model_rows), data_view_height)
 
 
 def render_graph_explorer_page(query_limit, data_view_height):
