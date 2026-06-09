@@ -1,0 +1,78 @@
+---
+description: Orchestrazione sync ModelRoot — un comando, fetch → merge Neo4j → cache JSON
+globs: modelroot/engine/**/*.py
+alwaysApply: false
+---
+
+# Engine sync — contratto unificato
+
+## Entry point
+
+**Non lanciare gli enricher a mano in sequenza.** Usare:
+
+```bash
+cd /home/ubuntu/modelroot
+./modelroot-env/bin/python3 engine/sync.py              # pipeline completa
+./modelroot-env/bin/python3 engine/sync.py --only datasets,leaderboard
+./modelroot-env/bin/python3 engine/sync.py --dry-run
+```
+
+`engine/sync.py` orchestra gli step in ordine, raccoglie OK/SKIP/WARN/FAIL, exit `0` solo se nessun FAIL.
+
+## Due tipi di dati
+
+| Tipo | Esempi | Aggiornamento |
+|------|--------|---------------|
+| **Curato** (git) | `task_tech_domain_map.json`, `domains.json` | manuale → enrich fa push Neo4j |
+| **Volatile** (HF/API) | `dataset_urls.json`, `open_llm_leaderboard.json` | solo via `sync.py` |
+
+## Contratto enricher volatile (3 fasi, stesso run)
+
+Ogni `enrich_*.py` che scarica dati esterni deve esporre `run(driver) -> SyncResult` con:
+
+1. **FETCH** — scarica da HF/API/dataset
+2. **MERGE** — scrive su Neo4j (`MERGE` + `SET`, mai wipe del grafo)
+3. **CACHE** — scrive JSON in `constants/` per lookup Streamlit
+
+Neo4j = source of truth operativa; JSON = cache allineata generata nello stesso run.
+
+```python
+# ✅ enrich_open_llm_leaderboard.py
+def run(driver):
+    rows = fetch_open_llm_leaderboard()
+    merged, skipped = merge_open_llm_scores(driver, rows)
+    write_open_llm_leaderboard_json(rows)
+    return SyncResult(name="leaderboard", merged=merged, skipped=skipped)
+
+# ❌ SBAGLIATO: script che scrive solo JSON senza merge Neo4j
+# ❌ SBAGLIATO: JSON e Neo4j aggiornati da due script separati
+```
+
+## Idempotenza e log
+
+- `MERGE` non `CREATE`; `SET` solo proprietà del dominio enricher
+- Non sovrascrivere campi di altri step (es. `downloads` da `mass_scraper2`)
+- Log: `[OK]` dopo scrittura confermata; `[SKIP]` se invariato; `[WARN]` match mancanti; `[FAIL]` errore bloccante
+- Rerun sicuro: stesso comando, nessun ordine manuale
+
+## Ordine pipeline (sync.py)
+
+```
+mass_scraper2 → enrich_model_links → mass_licences_other → papers_enrich
+→ enrich_dataset_urls → enrich_tech_domains → enrich_open_llm_leaderboard
+```
+
+Dipendenze: modelli in Neo4j prima di leaderboard/dataset URLs; Task prima di tech_domains.
+
+## Nuovo enricher volatile — checklist
+
+1. File dedicato in `engine/scrapers/enrich_<dominio>.py`
+2. Implementa `run(driver)` con FETCH → MERGE → CACHE
+3. Registra lo step in `engine/sync.py`
+4. JSON in `constants/<nome>.json` + loader sottile `constants/<nome>.py`
+5. Documenta proprietà Neo4j in `scrapers-architecture.mdc`
+
+## Fuori scope sync
+
+- **MTEB / embedding** — track separato, non in pipeline OLL
+- Script in `engine/deprecated/` — non registrare in sync

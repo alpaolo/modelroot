@@ -1,11 +1,15 @@
 import os
-from neo4j import GraphDatabase
-from huggingface_hub import model_info
+import sys
+from pathlib import Path
 
-# Configurazione connessione a Neo4j (usa le tue credenziali attuali)
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "y+8B0fxIcrist"  # <--- METTI LA TUA PASSWORD QUI
+from huggingface_hub import model_info
+from neo4j import GraphDatabase
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".env"))
+import config as env
+
+NEO4J_URI = env.NEO4J_URI
+NEO4J_AUTH = env.NEO4J_AUTH
 
 def get_advanced_model_data(model_id):
     """Interroga Hugging Face per estrarre licenza, dataset e paper ArXiv"""
@@ -56,7 +60,7 @@ def get_advanced_model_data(model_id):
         return {"license": "unknown", "datasets": [], "arxiv_ids": []}
 
 def main():
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
     
     with driver.session() as session:
         # 1. Recupera la lista dei modelli attualmente presenti nel database

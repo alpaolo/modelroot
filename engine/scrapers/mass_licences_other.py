@@ -1,7 +1,14 @@
+import sys
+from pathlib import Path
+
 import requests
 from neo4j import GraphDatabase
 
-from neo4j_config import NEO4J_AUTH as AUTH, NEO4J_URI as URI
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".env"))
+import config as env
+
+URI = env.NEO4J_URI
+AUTH = env.NEO4J_AUTH
 
 # Licenze che non devono essere scritte nel grafo (arricchimento fallito)
 UNRESOLVED_LICENSES = {"unknown", "other", "unknown / unspecified", ""}

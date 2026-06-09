@@ -1,0 +1,125 @@
+[
+  {
+    "id": "nlp_text",
+    "name": "Natural Language Processing (NLP) / Text",
+    "use_cases": [
+      "Machine translation",
+      "Text summarization",
+      "Text generation and completion",
+      "Sentiment and opinion analysis",
+      "Text classification and tagging",
+      "Conversational agents and chatbots",
+      "Question answering and information retrieval"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "computer_vision",
+    "name": "Computer Vision (CV) / Images & Video",
+    "use_cases": [
+      "Object detection and recognition",
+      "Image segmentation",
+      "Visual classification",
+      "Image generation (e.g. diffusion models)",
+      "Video understanding and tracking",
+      "OCR and document layout analysis"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "audio_speech",
+    "name": "Audio & Speech",
+    "use_cases": [
+      "Speech-to-text transcription (e.g. Whisper-style ASR)",
+      "Text-to-speech synthesis",
+      "Voice cloning and speaker adaptation",
+      "Sound event and audio classification",
+      "Speaker identification and diarization"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "multimodal",
+    "name": "Multimodal",
+    "use_cases": [
+      "Joint understanding of text, images, and audio",
+      "Visual question answering",
+      "Image captioning and image-to-text",
+      "Text-to-image and cross-modal retrieval",
+      "Unified assistants across modalities (e.g. GPT-4o, Gemini, CLIP-style models)"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "tabular_time_series",
+    "name": "Tabular Data & Time Series",
+    "use_cases": [
+      "Structured table classification and regression",
+      "Financial and demand forecasting",
+      "Time-series anomaly detection",
+      "Operational metrics monitoring",
+      "Predictive maintenance signals from sensor streams"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "code_intelligence",
+    "name": "Code Intelligence",
+    "use_cases": [
+      "Code generation and completion",
+      "Automated refactoring and repair",
+      "Test generation",
+      "Code search and semantic retrieval",
+      "Static analysis assisted by language models"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "reinforcement_learning",
+    "name": "Reinforcement Learning & Decision Systems",
+    "use_cases": [
+      "Policy learning for games and simulations",
+      "Robotics control and motion planning",
+      "Recommendation and ranking optimization",
+      "Resource allocation and scheduling",
+      "Human feedback alignment (RLHF-style pipelines)"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "graph_geospatial",
+    "name": "Graph, Geospatial & Structured Relations",
+    "use_cases": [
+      "Graph neural networks on knowledge and social graphs",
+      "Geospatial and satellite imagery analysis",
+      "Route, traffic, and location intelligence",
+      "Molecular and material graph modeling",
+      "Network and supply-chain topology analysis"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "scientific_ml",
+    "name": "Scientific & Engineering ML",
+    "use_cases": [
+      "Physics-informed and simulation surrogates",
+      "Chemistry and materials property prediction",
+      "Genomics and proteomics sequence modeling",
+      "Climate and weather modeling",
+      "Engineering design optimization"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "recommendation_retrieval",
+    "name": "Recommendation & Information Retrieval",
+    "use_cases": [
+      "Semantic search and dense retrieval",
+      "Embedding-based similarity and ranking",
+      "Personalized recommendation feeds",
+      "RAG document retrieval pipelines",
+      "Cross-encoder reranking"
+    ],
+    "compliance_note": null
+  }
+]

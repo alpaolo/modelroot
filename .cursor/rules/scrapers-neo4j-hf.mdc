@@ -1,6 +1,6 @@
 ---
 description: Schema Neo4j e pattern API Hugging Face per scrapers ModelRoot
-globs: modelroot/source/scrapers/**/*.py
+globs: modelroot/engine/scrapers/**/*.py
 alwaysApply: false
 ---
 

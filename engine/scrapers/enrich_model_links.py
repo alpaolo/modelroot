@@ -4,12 +4,18 @@ Fase A — arricchimento link su Model:
 - license_link: URL documento licenza da cardData (solo navigazione DS)
 - REQUEST_DELAY_SECONDS=1.0 per ridurre errori 429 su API HF
 """
+import sys
 import time
+from pathlib import Path
 
 import requests
 from neo4j import GraphDatabase
 
-from neo4j_config import NEO4J_AUTH as AUTH, NEO4J_URI as URI
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".env"))
+import config as env
+
+URI = env.NEO4J_URI
+AUTH = env.NEO4J_AUTH
 
 HF_MODEL_BASE_URL = "https://huggingface.co/"
 REQUEST_DELAY_SECONDS = 1.0

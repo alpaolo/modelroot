@@ -3,13 +3,18 @@ ModelRoot Streamlit app — catalog-first UX for license-aware model discovery.
 
 Modes: Model Catalog (default), Model Detail (1-hop graph), License Intelligence, Graph Explorer.
 Catalog: filter + table row selection only. Model name search uses HF token boundaries (/ - _ .), not raw substring (bert ≠ roberta).
-Detail/Graph Explorer: find field + match list (detail_model).
+Detail: Find model searches all Model nodes in Neo4j; radio lists all matching versions; fixed model bar under header.
+Graph Explorer: find field + in-memory match list (detail_model).
 Sidebar query_limit controls LIMIT on list/graph queries across all modes.
 Sidebar data_view_height sets native st.dataframe / graph iframe height in pixels.
-Minimal header: ModelRoot label in sidebar; native st.subheader per mode (no emoji).
+Fixed main chrome: 10vh header + 10vh footer in center column only (sidebar unchanged).
+Minimal header: ModelRoot label in sidebar; mode title in fixed main header (no emoji).
 UI constants (colors, columns, license URLs) live in constants/app_constants.py.
+Main chrome layout constants live in app.py (center-column header/footer).
 Neo4j queries live in constants/query.py.
 """
+import html
+import importlib
 import json
 import os
 import re
@@ -23,10 +28,54 @@ import streamlit.components.v1 as components
 from neo4j import GraphDatabase
 from pyvis.network import Network
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "source", "scrapers"))
+_APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _APP_ROOT)
+sys.path.insert(0, os.path.join(_APP_ROOT, ".env"))
+import config as env
 from constants.brand_urls import BRAND_HF_URLS
-from constants import (
-    ALL_MODEL_NAMES_BY_DOWNLOADS_CYPHER,
+from constants.dataset_urls import DATASET_DOCUMENTATION_URLS
+from constants.tech_domains import resolve_tech_domain_names_for_task
+
+
+def _load_query_constants():
+    """Reload query.py each Streamlit rerun — avoids stale sys.modules after deploy."""
+    query_py_path = os.path.join(_APP_ROOT, "constants", "query.py")
+    required_symbols = ("MODEL_PICKER_BROWSE_CYPHER", "MODEL_PICKER_SEARCH_CYPHER")
+    with open(query_py_path, encoding="utf-8") as query_file:
+        query_source = query_file.read()
+    missing_symbols = [symbol for symbol in required_symbols if symbol not in query_source]
+    if missing_symbols:
+        raise ImportError(
+            f"Outdated {query_py_path} — missing {', '.join(missing_symbols)}. "
+            "Deploy the latest constants/query.py with app.py, then "
+            "rm -rf constants/__pycache__ && restart Streamlit."
+        )
+    import constants.query as query_constants
+    return importlib.reload(query_constants)
+
+
+query_constants = _load_query_constants()
+ALL_MODEL_NAMES_BY_DOWNLOADS_CYPHER = query_constants.ALL_MODEL_NAMES_BY_DOWNLOADS_CYPHER
+DATABASE_SNAPSHOT_CYPHER = query_constants.DATABASE_SNAPSHOT_CYPHER
+DERIVED_MODELS_CYPHER = query_constants.DERIVED_MODELS_CYPHER
+DISTINCT_BRANDS_CYPHER = query_constants.DISTINCT_BRANDS_CYPHER
+DISTINCT_TASKS_CYPHER = query_constants.DISTINCT_TASKS_CYPHER
+GRAPH_EXPLORER_SUBGRAPH_CYPHER = query_constants.GRAPH_EXPLORER_SUBGRAPH_CYPHER
+LICENSE_GROUP_METADATA_CYPHER = query_constants.LICENSE_GROUP_METADATA_CYPHER
+MODEL_CATALOG_CYPHER = query_constants.MODEL_CATALOG_CYPHER
+MODEL_DETAIL_CYPHER = query_constants.MODEL_DETAIL_CYPHER
+MODEL_NEIGHBORHOOD_CYPHER = query_constants.MODEL_NEIGHBORHOOD_CYPHER
+MODEL_PICKER_BROWSE_CYPHER = query_constants.MODEL_PICKER_BROWSE_CYPHER
+MODEL_PICKER_SEARCH_CYPHER = query_constants.MODEL_PICKER_SEARCH_CYPHER
+MODELS_BY_LICENSE_GROUP_CYPHER = query_constants.MODELS_BY_LICENSE_GROUP_CYPHER
+MODELS_USING_DATASET_CYPHER = query_constants.MODELS_USING_DATASET_CYPHER
+RELATIONSHIP_TYPES_CYPHER = query_constants.RELATIONSHIP_TYPES_CYPHER
+TOP_DATASETS_BY_USAGE_CYPHER = query_constants.TOP_DATASETS_BY_USAGE_CYPHER
+TOP_LICENSES_CYPHER = query_constants.TOP_LICENSES_CYPHER
+TOP_MODELS_BY_RISK_CYPHER = query_constants.TOP_MODELS_BY_RISK_CYPHER
+from constants.app_constants import (
+    BENCHMARK_PANEL_BACKGROUND_COLOR,
+    BENCHMARK_PANEL_BORDER_COLOR,
     CATALOG_DISPLAY_COLUMNS,
     CATALOG_LINK_COLUMNS,
     CATALOG_STYLED_COLUMNS,
@@ -34,30 +83,20 @@ from constants import (
     DATA_VIEW_HEIGHT_DEFAULT,
     DATA_VIEW_HEIGHT_MAX,
     DATA_VIEW_HEIGHT_MIN,
-    DATABASE_SNAPSHOT_CYPHER,
     DATAFRAME_PLACEHOLDER,
     DEFAULT_RELATION_COLOR,
-    DISTINCT_BRANDS_CYPHER,
-    DISTINCT_TASKS_CYPHER,
     GRAPH_BACKGROUND_COLOR,
     GRAPH_EXPLORER_DEFAULT_REL_LIMIT,
     GRAPH_EXPLORER_PHYSICS_OPTIONS,
-    GRAPH_EXPLORER_SUBGRAPH_CYPHER,
     LICENSE_GROUP_CELL_STYLE,
     LICENSE_GROUP_COLORS,
-    LICENSE_GROUP_METADATA_CYPHER,
     LICENSE_OFFICIAL_DOCUMENT_URLS,
     LICENSE_WIKIPEDIA_PAGES,
     LINK_COLUMN_DISPLAY_TEXT,
     MINI_GRAPH_OPTIONS,
     MODE_OPTIONS,
-    MODEL_CATALOG_CYPHER,
-    MODEL_DETAIL_CYPHER,
-    MODEL_NEIGHBORHOOD_CYPHER,
     MODEL_PICKER_BROWSE_LIMIT,
     MODEL_PICKER_MATCH_LIMIT,
-    MODELS_BY_LICENSE_GROUP_CYPHER,
-    MODELS_USING_DATASET_CYPHER,
     NEIGHBORHOOD_KIND_LABELS,
     NEIGHBORHOOD_LINK_DISPLAY_REGEX,
     NEIGHBORHOOD_PLACEHOLDER_LINK_BASE,
@@ -65,29 +104,155 @@ from constants import (
     QUERY_LIMIT_MAX,
     QUERY_LIMIT_MIN,
     RELATION_COLORS,
-    RELATIONSHIP_TYPES_CYPHER,
-    TOP_DATASETS_BY_USAGE_CYPHER,
-    TOP_LICENSES_CYPHER,
-    TOP_MODELS_BY_RISK_CYPHER,
     TOP_MODELS_BY_RISK_DISPLAY_COLUMNS,
     TOP_MODELS_BY_RISK_STYLED_COLUMNS,
     UNCLASSIFIED_LICENSE_GROUP_LEGEND,
     UNKNOWN_LICENSE_GROUP_COLOR,
 )
-from neo4j_config import NEO4J_AUTH, NEO4J_URI
+NEO4J_URI = env.NEO4J_URI
+NEO4J_AUTH = env.NEO4J_AUTH
+
+_GRAPH_CANVAS_HEIGHT_TRIM_PX = 18
+
+# Main chrome layout (center column only; kept in app.py to avoid deploy/import drift)
+MAIN_CHROME_HEADER_HEIGHT_VH = 10
+MAIN_CHROME_FOOTER_HEIGHT_VH = 10
+MAIN_CHROME_STREAMLIT_HEADER_OFFSET_REM = 3.75
+MAIN_CHROME_SIDEBAR_WIDTH_REM = 21
+MAIN_CHROME_SIDEBAR_COLLAPSED_WIDTH_REM = 2.875
+MAIN_CHROME_BACKGROUND_COLOR = "#f8fafc"
+MAIN_CHROME_BORDER_COLOR = "#e2e8f0"
+MAIN_CHROME_TAGLINE = "AI Lineage & Compliance Knowledge Graph"
+MAIN_CHROME_FOOTER_DISCLAIMER = (
+    "Compliance guidance is indicative — verify license terms before deployment."
+)
+MAIN_CHROME_FOOTER_DATA_SOURCES = "Data: Neo4j graph · Hugging Face · Open LLM Leaderboard"
+MAIN_CONTENT_BASE_FONT_REM = 0.875
+DETAIL_MODEL_BAR_HEIGHT_REM = 2.25
 
 st.set_page_config(layout="wide", page_title="ModelRoot")
 
 
-def inject_app_styles():
+def inject_app_styles(show_detail_model_bar=False):
+    detail_model_bar_offset = (
+        f" + {DETAIL_MODEL_BAR_HEIGHT_REM}rem" if show_detail_model_bar else ""
+    )
+    main_chrome_top_offset = (
+        f"calc({MAIN_CHROME_HEADER_HEIGHT_VH}vh + "
+        f"{MAIN_CHROME_STREAMLIT_HEADER_OFFSET_REM}rem{detail_model_bar_offset})"
+    )
     st.markdown(
-        """
+        f"""
         <style>
-        .block-container {
-            padding-top: 2.25rem;
-            padding-bottom: 1.25rem;
-        }
-        section[data-testid="stSidebar"] h5 {
+        section[data-testid="stMain"] .block-container {{
+            padding-top: {main_chrome_top_offset} !important;
+            padding-bottom: calc({MAIN_CHROME_FOOTER_HEIGHT_VH}vh + 1rem) !important;
+            max-width: 100%;
+            font-size: {MAIN_CONTENT_BASE_FONT_REM}rem;
+        }}
+        .modelroot-main-header,
+        .modelroot-main-footer {{
+            position: fixed;
+            z-index: 998;
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.5rem 1.25rem;
+            background: {MAIN_CHROME_BACKGROUND_COLOR};
+            color: #334155;
+            font-size: 0.8rem;
+            line-height: 1.35;
+            overflow: hidden;
+            left: {MAIN_CHROME_SIDEBAR_WIDTH_REM}rem;
+            right: 0;
+        }}
+        .modelroot-main-header {{
+            top: {MAIN_CHROME_STREAMLIT_HEADER_OFFSET_REM}rem;
+            height: {MAIN_CHROME_HEADER_HEIGHT_VH}vh;
+            min-height: 3rem;
+            border-bottom: 1px solid {MAIN_CHROME_BORDER_COLOR};
+        }}
+        .modelroot-main-footer {{
+            bottom: 0;
+            height: {MAIN_CHROME_FOOTER_HEIGHT_VH}vh;
+            min-height: 3rem;
+            border-top: 1px solid {MAIN_CHROME_BORDER_COLOR};
+        }}
+        .modelroot-detail-model-bar {{
+            position: fixed;
+            z-index: 997;
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.35rem 1.25rem;
+            background: #eef2ff;
+            border-bottom: 1px solid {MAIN_CHROME_BORDER_COLOR};
+            color: #1e3a8a;
+            font-size: 0.82rem;
+            left: {MAIN_CHROME_SIDEBAR_WIDTH_REM}rem;
+            right: 0;
+            top: calc({MAIN_CHROME_STREAMLIT_HEADER_OFFSET_REM}rem + {MAIN_CHROME_HEADER_HEIGHT_VH}vh);
+            height: {DETAIL_MODEL_BAR_HEIGHT_REM}rem;
+            overflow: hidden;
+        }}
+        .modelroot-detail-model-bar-label {{
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-size: 0.72rem;
+            color: #475569;
+            white-space: nowrap;
+        }}
+        .modelroot-detail-model-bar-name {{
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .modelroot-main-header-title {{
+            font-weight: 700;
+            font-size: 0.875rem;
+            color: #0f172a;
+            white-space: nowrap;
+        }}
+        .modelroot-main-header-mode {{
+            font-weight: 600;
+            color: #1e40af;
+            white-space: nowrap;
+        }}
+        .modelroot-main-header-meta {{
+            color: #64748b;
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .modelroot-main-footer-text {{
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        [data-testid="stAppViewContainer"]:has(
+            section[data-testid="stSidebar"][aria-expanded="false"]
+        ) .modelroot-main-header,
+        [data-testid="stAppViewContainer"]:has(
+            section[data-testid="stSidebar"][aria-expanded="false"]
+        ) .modelroot-main-footer,
+        [data-testid="stAppViewContainer"]:has(
+            section[data-testid="stSidebar"][aria-expanded="false"]
+        ) .modelroot-detail-model-bar {{
+            left: {MAIN_CHROME_SIDEBAR_COLLAPSED_WIDTH_REM}rem;
+        }}
+        @media (max-width: 768px) {{
+            .modelroot-main-header,
+            .modelroot-main-footer,
+            .modelroot-detail-model-bar {{
+                left: 0;
+            }}
+        }}
+        section[data-testid="stSidebar"] h5 {{
             font-size: 0.75rem !important;
             font-weight: 600 !important;
             letter-spacing: 0.1em;
@@ -98,15 +263,158 @@ def inject_app_styles():
             padding-bottom: 0.5rem;
             border-bottom: 1px solid #e2e8f0;
             margin-bottom: 0.75rem;
-        }
-        .main h3 {
+        }}
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] h1 {{
+            font-size: 1.35rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] h2,
+        section[data-testid="stMain"] h2 {{
+            font-size: 1.1rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] h3,
+        section[data-testid="stMain"] h3 {{
             margin-top: 0.25rem;
-            line-height: 1.4;
-        }
-        div[data-testid="stDataFrame"] {
+            line-height: 1.35;
+            font-size: 1rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] h4 {{
+            font-size: 0.95rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] h5 {{
+            font-size: 0.9rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] h6 {{
+            font-size: 0.85rem;
+            font-weight: 600;
+        }}
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] p,
+        section[data-testid="stMain"] [data-testid="stMarkdownContainer"] li {{
+            font-size: {MAIN_CONTENT_BASE_FONT_REM}rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stMetricLabel"] {{
+            font-size: 0.78rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stMetricValue"] {{
+            font-size: 1.05rem;
+        }}
+        section[data-testid="stMain"] [data-testid="stCaptionContainer"] {{
+            font-size: 0.75rem;
+        }}
+        section[data-testid="stMain"] label,
+        section[data-testid="stMain"] [data-testid="stWidgetLabel"] p {{
+            font-size: 0.8rem !important;
+        }}
+        section[data-testid="stMain"] input,
+        section[data-testid="stMain"] textarea,
+        section[data-testid="stMain"] [data-baseweb="select"] {{
+            font-size: 0.82rem !important;
+        }}
+        section[data-testid="stMain"] button {{
+            font-size: 0.82rem;
+        }}
+        section[data-testid="stMain"] div[data-testid="stDataFrame"] {{
+            font-size: 0.75rem;
+        }}
+        .modelroot-benchmark-suite {{
+            border: 2px solid {BENCHMARK_PANEL_BORDER_COLOR};
+            border-radius: 0.5rem;
+            background: {BENCHMARK_PANEL_BACKGROUND_COLOR};
+            padding: 0.5rem 0.75rem;
+            width: fit-content;
+            max-width: 100%;
+            overflow: visible;
+        }}
+        .modelroot-benchmark-suite table {{
+            width: 100%;
+            border-collapse: collapse;
             font-size: 0.8rem;
-        }
+        }}
+        .modelroot-benchmark-suite th,
+        .modelroot-benchmark-suite td {{
+            padding: 0.35rem 0.9rem;
+            text-align: left;
+            white-space: nowrap;
+        }}
+        .modelroot-benchmark-suite thead th {{
+            border-bottom: 1px solid #cbd5e1;
+            color: #334155;
+        }}
+        div[data-testid="stButton"] button[kind="primary"] {{
+            background-color: {BENCHMARK_PANEL_BORDER_COLOR};
+            border-color: {BENCHMARK_PANEL_BORDER_COLOR};
+            color: #ffffff;
+        }}
+        div[data-testid="stButton"] button[kind="primary"]:hover {{
+            background-color: #1d4ed8;
+            border-color: #1d4ed8;
+            color: #ffffff;
+        }}
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+@st.cache_data
+def load_database_snapshot_summary():
+    snapshot_rows = run_query(DATABASE_SNAPSHOT_CYPHER)
+    if not snapshot_rows:
+        return None
+    return snapshot_rows[0]
+
+
+def render_main_header(mode, snapshot_summary):
+    snapshot_meta_text = ""
+    if snapshot_summary:
+        snapshot_meta_text = (
+            f"{snapshot_summary['models']:,} models · "
+            f"{snapshot_summary['licenses']:,} licenses · "
+            f"{snapshot_summary['groups']} risk groups"
+        )
+    st.markdown(
+        f"""
+        <div class="modelroot-main-header">
+          <div>
+            <span class="modelroot-main-header-title">ModelRoot</span>
+            <span> — {MAIN_CHROME_TAGLINE}</span>
+          </div>
+          <span class="modelroot-main-header-mode">{mode}</span>
+          <span class="modelroot-main-header-meta">{snapshot_meta_text}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_detail_model_bar(model_name):
+    escaped_model_name = html.escape(model_name)
+    st.markdown(
+        f"""
+        <div class="modelroot-detail-model-bar">
+          <span class="modelroot-detail-model-bar-label">Selected model</span>
+          <span class="modelroot-detail-model-bar-name">{escaped_model_name}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def clear_detail_search_session_state():
+    for session_key in (
+        "detail_model_find",
+        "detail_model_active_search",
+        "detail_model_disambiguation",
+    ):
+        st.session_state.pop(session_key, None)
+
+
+def render_main_footer():
+    st.markdown(
+        f"""
+        <div class="modelroot-main-footer">
+          <span class="modelroot-main-footer-text">{MAIN_CHROME_FOOTER_DISCLAIMER}</span>
+          <span class="modelroot-main-footer-text">{MAIN_CHROME_FOOTER_DATA_SOURCES}</span>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -189,19 +497,106 @@ def build_hf_token_search_regex(search_text):
     return f"(?i).*{combined_pattern}.*"
 
 
-def load_model_catalog(search, license_groups, tasks, brands, limit):
+def load_model_catalog(search, license_groups, tasks, brands, in_benchmark, limit):
     return run_query(MODEL_CATALOG_CYPHER, {
         "search_pattern": build_hf_token_search_regex(search),
         "license_groups": license_groups,
         "tasks": tasks,
         "brands": brands,
+        "in_benchmark": in_benchmark,
         "limit": limit,
     })
 
 
 def load_model_detail(model_name):
     rows = run_query(MODEL_DETAIL_CYPHER, {"model_name": model_name})
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    detail = rows[0]
+    detail["tech_domain_names"] = resolve_tech_domain_names_for_task(
+        detail.get("task"),
+        detail.get("tech_domain_names"),
+    )
+    return detail
+
+
+def model_has_benchmark(detail):
+    return detail.get("oll_rank") is not None
+
+
+def render_benchmark_section(detail, model_name):
+    if not model_has_benchmark(detail):
+        return
+
+    benchmark_panel_session_key = f"benchmark_panel_open_{model_name}"
+    if st.button("Benchmark", type="primary", key=f"benchmark_toggle_{model_name}"):
+        st.session_state[benchmark_panel_session_key] = not st.session_state.get(
+            benchmark_panel_session_key,
+            False,
+        )
+
+    if not st.session_state.get(benchmark_panel_session_key, False):
+        return
+
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    with metric_col1:
+        st.metric("Rank", f"#{int(detail['oll_rank'])}")
+    with metric_col2:
+        st.metric("Average", f"{detail['oll_average']:.2f}")
+    with metric_col3:
+        params_b = detail.get("oll_params_b")
+        st.metric("Params (B)", f"{params_b:.2f}" if params_b is not None else "—")
+
+    benchmark_suite_rows = []
+    for field_key, suite_name in (
+        ("oll_ifeval", "IFEval"),
+        ("oll_bbh", "BBH"),
+        ("oll_math_lvl5", "MATH Lvl 5"),
+        ("oll_gpqa", "GPQA"),
+        ("oll_musr", "MUSR"),
+        ("oll_mmlu_pro", "MMLU-PRO"),
+    ):
+        score = detail.get(field_key)
+        if score is not None:
+            benchmark_suite_rows.append({
+                "Suite": suite_name,
+                "Score": round(float(score), 2),
+            })
+
+    if benchmark_suite_rows:
+        benchmark_table_rows_html = "".join(
+            (
+                f"<tr><td>{benchmark_row['Suite']}</td>"
+                f"<td>{benchmark_row['Score']}</td></tr>"
+            )
+            for benchmark_row in benchmark_suite_rows
+        )
+        st.markdown(
+            f"""
+            <div class="modelroot-benchmark-suite">
+              <table>
+                <thead>
+                  <tr><th>Suite</th><th>Score</th></tr>
+                </thead>
+                <tbody>{benchmark_table_rows_html}</tbody>
+              </table>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    submission_date = detail.get("oll_submission_date")
+    if submission_date:
+        st.caption(f"Evaluated on: {submission_date}")
+
+
+def format_task_with_tech_domain(task_name, tech_domain_names):
+    tech_domain_label = ", ".join(tech_domain_names) if tech_domain_names else None
+    if tech_domain_label and task_name and task_name != "—":
+        return f"{tech_domain_label} · {task_name}"
+    if tech_domain_label:
+        return tech_domain_label
+    return task_name or "—"
 
 
 @st.cache_data
@@ -209,6 +604,28 @@ def load_all_model_names_by_downloads():
     return [
         row["model"]
         for row in run_query(ALL_MODEL_NAMES_BY_DOWNLOADS_CYPHER)
+    ]
+
+
+@st.cache_data
+def load_top_model_names_by_downloads(limit):
+    return [
+        row["model"]
+        for row in run_query(MODEL_PICKER_BROWSE_CYPHER, {"limit": limit})
+    ]
+
+
+@st.cache_data
+def load_model_names_by_hf_token_search(search_text, limit):
+    search_pattern = build_hf_token_search_regex(search_text)
+    if search_pattern is None:
+        return []
+    return [
+        row["model"]
+        for row in run_query(
+            MODEL_PICKER_SEARCH_CYPHER,
+            {"search_pattern": search_pattern, "limit": limit},
+        )
     ]
 
 
@@ -230,11 +647,102 @@ def filter_models_by_hf_token_search(model_options, search_text):
     ][:MODEL_PICKER_MATCH_LIMIT]
 
 
-def render_model_picker(session_key):
-    model_options = build_model_picker_options(session_key)
-    if not model_options:
-        st.error("No models found.")
-        return None
+def ensure_current_model_in_picker_options(picker_options, session_key):
+    current_model = st.session_state.get(session_key)
+    if current_model and current_model not in picker_options:
+        return [current_model, *picker_options]
+    return picker_options
+
+
+def sort_detail_search_matches_with_exact_first(find_query, search_matches):
+    query_lower = find_query.strip().lower()
+    exact_matches = [
+        model_name for model_name in search_matches if model_name.lower() == query_lower
+    ]
+    other_matches = [
+        model_name for model_name in search_matches if model_name.lower() != query_lower
+    ]
+    return exact_matches + other_matches
+
+
+def pick_best_detail_search_match(find_query, search_matches):
+    sorted_matches = sort_detail_search_matches_with_exact_first(find_query, search_matches)
+    return sorted_matches[0]
+
+
+def detail_model_disambiguation_session_key(session_key):
+    return f"{session_key}_disambiguation"
+
+
+def render_detail_model_search_picker(session_key):
+    find_query = st.text_input(
+        "Find model",
+        placeholder="e.g. gpt2, openai-community/gpt2, qwen",
+        key=f"{session_key}_find",
+        help=(
+            "HF token match on / - _ . boundaries. Shows all matching versions in the database; "
+            "a full org/model name is pre-selected when it exists."
+        ),
+    )
+    find_query_normalized = find_query.strip()
+    active_search_session_key = f"{session_key}_active_search"
+    disambiguation_session_key = detail_model_disambiguation_session_key(session_key)
+
+    if find_query_normalized:
+        raw_search_matches = load_model_names_by_hf_token_search(
+            find_query_normalized,
+            MODEL_PICKER_MATCH_LIMIT,
+        )
+        search_matches = sort_detail_search_matches_with_exact_first(
+            find_query_normalized,
+            raw_search_matches,
+        )
+        if not search_matches:
+            st.warning(f"No model token matches '{find_query_normalized}'.")
+            return st.session_state.get(session_key)
+
+        if st.session_state.get(active_search_session_key) != find_query_normalized:
+            st.session_state[active_search_session_key] = find_query_normalized
+            best_match_model = pick_best_detail_search_match(
+                find_query_normalized,
+                search_matches,
+            )
+            st.session_state[disambiguation_session_key] = best_match_model
+
+        if st.session_state.get(disambiguation_session_key) not in search_matches:
+            st.session_state[disambiguation_session_key] = search_matches[0]
+
+        if len(search_matches) > 1:
+            st.caption(f"{len(search_matches)} matches — pick one to update graph and tables.")
+            st.radio(
+                "Matching models",
+                search_matches,
+                format_func=lambda model_name: model_name,
+                key=disambiguation_session_key,
+            )
+
+        selected_model = st.session_state[disambiguation_session_key]
+        st.session_state[session_key] = selected_model
+        return selected_model
+
+    st.session_state.pop(active_search_session_key, None)
+    st.session_state.pop(disambiguation_session_key, None)
+    selected_model = st.session_state.get(session_key)
+    if not selected_model:
+        browse_default_models = load_top_model_names_by_downloads(1)
+        if not browse_default_models:
+            st.error("No models found.")
+            return None
+        selected_model = browse_default_models[0]
+        st.session_state[session_key] = selected_model
+
+    st.caption("Type above to search any model in the database.")
+    return selected_model
+
+
+def render_model_picker(session_key, search_full_database=False):
+    if search_full_database:
+        return render_detail_model_search_picker(session_key)
 
     find_query = st.text_input(
         "Find model",
@@ -242,10 +750,22 @@ def render_model_picker(session_key):
         key=f"{session_key}_find",
         help="HF token match on / - _ . boundaries (google-bert matches bert; roberta does not).",
     )
+
+    model_options = build_model_picker_options(session_key)
+    if not model_options:
+        st.error("No models found.")
+        return None
     picker_options = filter_models_by_hf_token_search(model_options, find_query)
+    browse_fallback_options = model_options[:MODEL_PICKER_BROWSE_LIMIT]
+
     if find_query.strip() and not picker_options:
         st.warning(f"No model token matches '{find_query.strip()}'.")
-        picker_options = model_options[:MODEL_PICKER_BROWSE_LIMIT]
+        picker_options = browse_fallback_options
+
+    picker_options = ensure_current_model_in_picker_options(picker_options, session_key)
+    if not picker_options:
+        st.error("No models found.")
+        return None
 
     if st.session_state.get(session_key) not in picker_options:
         st.session_state[session_key] = picker_options[0]
@@ -257,6 +777,13 @@ def render_model_picker(session_key):
     )
     st.selectbox(picker_label, picker_options, key=session_key)
     return st.session_state[session_key]
+
+
+def load_derived_models(model_name, limit):
+    return run_query(
+        DERIVED_MODELS_CYPHER,
+        {"model_name": model_name, "limit": limit},
+    )
 
 
 def load_model_neighborhood(model_name, limit):
@@ -320,6 +847,9 @@ def build_neighborhood_link_cell(entity_label, entity_kind, entity_url, placehol
             return f"{brand_hf_url}#{entity_label}"
         return f"{placeholder_link_base}{entity_label}"
     if entity_kind == "Dataset":
+        dataset_documentation_url = DATASET_DOCUMENTATION_URLS.get(entity_label)
+        if dataset_documentation_url:
+            return f"{dataset_documentation_url}#{entity_label}"
         return f"{placeholder_link_base}{entity_label}"
     if entity_kind == "License":
         license_document_url = resolve_license_documentation_url(entity_label)
@@ -406,6 +936,7 @@ def get_catalog_column_config():
         "model": st.column_config.TextColumn("Model", width="large"),
         "brand": st.column_config.TextColumn("Brand", width="small"),
         "task": st.column_config.TextColumn("Task", width="small"),
+        "benchmark": st.column_config.TextColumn("Benchmark", width="small"),
         "license": st.column_config.TextColumn("License", width="small"),
         "risk_level": st.column_config.TextColumn("Risk", width="medium"),
         "downloads": st.column_config.NumberColumn("DL", format="%d", width="small"),
@@ -440,9 +971,34 @@ def load_top_models_by_risk(limit=30):
     return run_query(TOP_MODELS_BY_RISK_CYPHER, {"limit": limit})
 
 
+def build_graph_canvas_height(data_view_height):
+    return max(
+        DATA_VIEW_HEIGHT_MIN - _GRAPH_CANVAS_HEIGHT_TRIM_PX,
+        data_view_height - _GRAPH_CANVAS_HEIGHT_TRIM_PX,
+    )
+
+
+def render_pyvis_graph_html(net, data_view_height):
+    graph_overflow_fix_css = """
+        <style>
+        body { margin: 0; overflow: hidden; }
+        .card { border: none !important; margin: 0 !important; }
+        .card-body { padding: 0 !important; }
+        </style>
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as graph_file:
+        graph_path = graph_file.name
+    net.save_graph(graph_path)
+    with open(graph_path, "r", encoding="utf-8") as graph_file:
+        graph_html = graph_file.read().replace("</head>", f"{graph_overflow_fix_css}</head>")
+    os.remove(graph_path)
+    components.html(graph_html, height=data_view_height, scrolling=False)
+
+
 def render_mini_graph(center_model, edges, data_view_height):
+    graph_canvas_height = build_graph_canvas_height(data_view_height)
     net = Network(
-        height=f"{data_view_height}px",
+        height=f"{graph_canvas_height}px",
         width="100%",
         bgcolor=GRAPH_BACKGROUND_COLOR,
         directed=True,
@@ -461,17 +1017,12 @@ def render_mini_graph(center_model, edges, data_view_height):
             net.add_node(target, label=target, color=color, size=14)
         net.add_edge(source, target, label=relation.replace("_", " "), color=color, arrows="to")
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as graph_file:
-        graph_path = graph_file.name
-    net.save_graph(graph_path)
-    with open(graph_path, "r", encoding="utf-8") as graph_file:
-        components.html(graph_file.read(), height=data_view_height, scrolling=True)
-    os.remove(graph_path)
+    render_pyvis_graph_html(net, data_view_height)
 
 
 def render_catalog_page(query_limit, data_view_height):
-    st.markdown("###### Model Catalog ######")
-    st.markdown("###### Search and filter models by license risk, task, and publisher. ######")
+    st.markdown("##### Model Catalog")
+    st.caption("Search and filter models by license risk, task, and publisher.")
     render_license_group_legend(data_view_height)
 
     license_group_metadata_by_id = {
@@ -500,16 +1051,30 @@ def render_catalog_page(query_limit, data_view_height):
     with brand_col:
         selected_brands = st.multiselect("Brand", get_brands())
 
+    in_benchmark = st.checkbox(
+        "Benchmark only",
+        value=False,
+        help="Show only models with benchmark scores synced in ModelRoot (oll_rank on Model).",
+    )
+
     catalog_filter_signature = (
         search.strip(),
         tuple(sorted(selected_groups)),
         tuple(sorted(selected_tasks)),
         tuple(sorted(selected_brands)),
+        in_benchmark,
     )
     if st.session_state.get("catalog_filter_signature") != catalog_filter_signature:
         st.session_state["catalog_filter_signature"] = catalog_filter_signature
 
-    rows = load_model_catalog(search, selected_groups, selected_tasks, selected_brands, query_limit)
+    rows = load_model_catalog(
+        search,
+        selected_groups,
+        selected_tasks,
+        selected_brands,
+        in_benchmark,
+        query_limit,
+    )
     if not rows:
         st.warning("No models match the current filters.")
         return
@@ -544,13 +1109,11 @@ def render_catalog_page(query_limit, data_view_height):
     if st.button("View detail", type="primary", disabled=selected_model is None):
         st.session_state["detail_model"] = selected_model
         st.session_state["pending_mode"] = "Model Detail"
+        clear_detail_search_session_state()
         st.rerun()
 
 
-def render_detail_page(query_limit, data_view_height):
-    st.subheader("Model Detail")
-
-    model_name = render_model_picker("detail_model")
+def render_detail_page_body(model_name, query_limit, data_view_height):
     if model_name is None:
         return
 
@@ -579,7 +1142,10 @@ def render_detail_page(query_limit, data_view_height):
     elif detail.get("license_group_compliance"):
         st.caption(detail["license_group_compliance"])
 
-    st.write("Task", detail["task"])
+    st.write(
+        "Task",
+        format_task_with_tech_domain(detail["task"], detail["tech_domain_names"]),
+    )
 
     link_col1, link_col2 = st.columns(2)
     with link_col1:
@@ -591,13 +1157,14 @@ def render_detail_page(query_limit, data_view_height):
         if detail.get("license_link"):
             st.link_button("Open license document", detail["license_link"])
 
-    neighborhood_edges = load_model_neighborhood(model_name, query_limit)
-    hide_derivative_models = st.checkbox(
-        "Hide derivative models (GGUF/forks)",
-        value=True,
-        help="Hides incoming DERIVED_FROM links from quantized or repackaged forks.",
+    show_derived_models = st.toggle(
+        "Show derived",
+        value=False,
+        help="Shows GGUF/AWQ/fork models (DERIVED_FROM) in the graph and in the derived table below.",
     )
-    if hide_derivative_models:
+
+    neighborhood_edges = load_model_neighborhood(model_name, query_limit)
+    if not show_derived_models:
         neighborhood_edges = [
             neighborhood_edge
             for neighborhood_edge in neighborhood_edges
@@ -607,8 +1174,38 @@ def render_detail_page(query_limit, data_view_height):
                 and neighborhood_edge["entity_type"] == "Model"
             )
         ]
+    neighborhood_edges = [
+        neighborhood_edge
+        for neighborhood_edge in neighborhood_edges
+        if neighborhood_edge["relation"] != "PERFORMS"
+    ]
     if neighborhood_edges:
         render_mini_graph(model_name, neighborhood_edges, data_view_height)
+
+    render_benchmark_section(detail, model_name)
+
+    if show_derived_models:
+        derived_model_rows = load_derived_models(model_name, query_limit)
+        if derived_model_rows:
+            derived_models_dataframe = prepare_dataframe_link_columns(
+                pd.DataFrame(derived_model_rows),
+                ["hf_url"],
+            )
+            st.subheader("Derived models")
+            render_scrollable_dataframe(
+                derived_models_dataframe,
+                data_view_height,
+                column_config={
+                    "model": st.column_config.TextColumn("Model", width="large"),
+                    "downloads": st.column_config.NumberColumn("Downloads", format="%d"),
+                    "license": st.column_config.TextColumn("License", width="small"),
+                    "hf_url": get_hf_link_column(),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No derived models found for this base model.")
 
     st.subheader("Related entities (1-hop)")
     st.caption(f"Center: {model_name}")
@@ -694,8 +1291,9 @@ def render_graph_explorer_page(query_limit, data_view_height):
         )
         
         if results:
+            graph_canvas_height = build_graph_canvas_height(data_view_height)
             net = Network(
-                height=f"{data_view_height}px",
+                height=f"{graph_canvas_height}px",
                 width="100%",
                 bgcolor=GRAPH_BACKGROUND_COLOR,
                 directed=True,
@@ -706,24 +1304,20 @@ def render_graph_explorer_page(query_limit, data_view_height):
                 net.add_node(row["model"], label=row["model"], color=CENTER_MODEL_NODE_COLOR)
                 net.add_node(row["target_name"], label=row["target_name"], color=rel_color)
                 net.add_edge(row["model"], row["target_name"], label=row["relation"], color=rel_color, arrows="to")
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as graph_file:
-                graph_path = graph_file.name
-            net.save_graph(graph_path)
-            with open(graph_path, "r", encoding="utf-8") as graph_file:
-                components.html(graph_file.read(), height=data_view_height, scrolling=True)
-            os.remove(graph_path)
+            render_pyvis_graph_html(net, data_view_height)
         else:
             st.warning("No relationships found.")
 
 
 # --- UI ---
-inject_app_styles()
-st.markdown("##### AI Lineage & Compliance Knowledge Graph. #####") 
 if "mode" not in st.session_state:
     st.session_state["mode"] = "Model Catalog"
 
 if st.session_state.get("pending_mode"):
-    st.session_state["mode"] = st.session_state.pop("pending_mode")
+    pending_mode = st.session_state.pop("pending_mode")
+    st.session_state["mode"] = pending_mode
+    if pending_mode == "Model Detail":
+        clear_detail_search_session_state()
 
 st.sidebar.markdown("##### ModelRoot")
 st.sidebar.markdown("##### AI Lineage & Compliance Knowledge Graph. #####") 
@@ -753,19 +1347,31 @@ data_view_height = st.sidebar.slider(
     help="Fixed layout height for tables and graphs. Use fullscreen on a table for more space.",
 )
 
-with st.sidebar.expander("Database snapshot"):
-    snapshot = run_query(DATABASE_SNAPSHOT_CYPHER)
-    if snapshot:
-        st.metric("Models", f"{snapshot[0]['models']:,}")
-        st.metric("Licenses", f"{snapshot[0]['licenses']:,}")
-        st.metric("License groups", snapshot[0]["groups"])
+database_snapshot_summary = load_database_snapshot_summary()
 
-if mode == "Model Catalog":
+with st.sidebar.expander("Database snapshot"):
+    if database_snapshot_summary:
+        st.metric("Models", f"{database_snapshot_summary['models']:,}")
+        st.metric("Licenses", f"{database_snapshot_summary['licenses']:,}")
+        st.metric("License groups", database_snapshot_summary["groups"])
+
+detail_active_model = None
+if mode == "Model Detail":
+    detail_active_model = render_detail_model_search_picker("detail_model")
+
+inject_app_styles(show_detail_model_bar=(mode == "Model Detail" and detail_active_model))
+render_main_header(mode, database_snapshot_summary)
+
+if mode == "Model Detail":
+    if detail_active_model:
+        render_detail_model_bar(detail_active_model)
+    render_detail_page_body(detail_active_model, query_limit, data_view_height)
+elif mode == "Model Catalog":
     render_catalog_page(query_limit, data_view_height)
-elif mode == "Model Detail":
-    render_detail_page(query_limit, data_view_height)
 elif mode == "License Intelligence":
     render_license_intelligence_page(query_limit, data_view_height)
 else:
     render_graph_explorer_page(query_limit, data_view_height)
+
+render_main_footer()
 

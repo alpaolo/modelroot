@@ -35,6 +35,7 @@ RELATION_COLORS = {
 DEFAULT_RELATION_COLOR = "#999999"
 CENTER_MODEL_NODE_COLOR = "#FF4B4B"
 GRAPH_BACKGROUND_COLOR = "#ffffff"
+GRAPH_IFRAME_HEIGHT_TRIM_PX = 18
 
 # Model picker
 MODEL_PICKER_BROWSE_LIMIT = 50
@@ -91,11 +92,19 @@ LICENSE_WIKIPEDIA_PAGES = {
     "ai-by-nc-1.0": "Creative_Commons_license",
 }
 
+# Benchmark panel (Model Detail)
+BENCHMARK_PANEL_BORDER_COLOR = "#2563eb"
+BENCHMARK_PANEL_BACKGROUND_COLOR = "#f8fafc"
+OPEN_LLM_BENCHMARK_SOURCE_URL = (
+    "https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard"
+)
+
 # Catalog / license-intelligence table columns
 CATALOG_DISPLAY_COLUMNS = [
     "model",
     "brand",
     "task",
+    "benchmark",
     "license",
     "risk_level",
     "downloads",

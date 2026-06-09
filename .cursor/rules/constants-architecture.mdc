@@ -13,15 +13,25 @@ alwaysApply: true
 | `constants/query.py` | Neo4j Cypher strings — suffix `_CYPHER` (e.g. `MODEL_CATALOG_CYPHER`) |
 | `constants/brand_urls.json` | Large static mappings (2363+ brand → HF org URL) |
 | `constants/brand_urls.py` | Thin loader: exposes `BRAND_HF_URLS` from JSON |
+| `constants/dataset_urls.json` | Dataset.name → documentation URL (HF + official sources) |
+| `constants/dataset_urls.py` | Thin loader: exposes `DATASET_DOCUMENTATION_URLS` from JSON |
+| `constants/open_llm_leaderboard.json` | Model.name → Open LLM Leaderboard scores |
+| `constants/open_llm_leaderboard.py` | Thin loader: `get_open_llm_leaderboard_entry()` |
 | `constants/__init__.py` | Re-exports; must include explicit `from constants.brand_urls import BRAND_HF_URLS` |
 
 ## Rules
 
 1. **Never put thousand-entry dicts in `app_constants.py`** — keep it under ~200 lines.
 2. **Large mappings → JSON + loader module**, not a giant `.py` literal.
-3. **Cypher queries** always named `*_CYPHER` in `query.py`.
+3. **Cypher queries** always named `*_CYPHER` in `query.py` — **never** in `app.py`. Deploy drift → follow `import-sync.mdc` (ship `query.py` with `app.py`), not inline duplication.
 4. **`constants/__init__.py`**: use explicit imports for large/critical symbols; do not rely only on `import *` for voluminous data.
-5. **`app.py` imports `BRAND_HF_URLS`** via `from constants.brand_urls import BRAND_HF_URLS` (direct, reliable).
+5. **`app.py` sempre import diretti** (mai `from constants import ...`):
+   - `from constants.app_constants import ...`
+   - `from constants.query import ..._CYPHER`
+   - `from constants.brand_urls import BRAND_HF_URLS`
+   - `from constants.dataset_urls import DATASET_DOCUMENTATION_URLS`
+6. **Import sync**: new `*_CYPHER` in `app.py` import → add to `query.py` same change → verify per `import-sync.mdc` → deploy `app.py` **and** `constants/query.py` together.
+7. **Exceptions in `app.py` only**: startup layout (`MAIN_CHROME_*`), font scale — UI tuning, not data queries.
 
 ## Streamlit LinkColumn display text
 
@@ -34,3 +44,11 @@ alwaysApply: true
 Derive HF org slug from Neo4j `m.hf_url` / `m.name` (`org/model`).
 Add manual aliases for display names (e.g. `"Meta / Facebook"` → `facebook`).
 Write output to `constants/brand_urls.json`, not into `app_constants.py`.
+
+## Regenerating dataset URLs / leaderboard JSON
+
+Run `engine/sync.py` (or `--only datasets,leaderboard`) — not the enricher alone.
+Volatile enrichers: FETCH → MERGE Neo4j → write `constants/*.json` in the same run.
+See `.cursor/rules/engine-sync.mdc`.
+
+Dataset URL resolution order: curated overrides → HF `org/name` page → HF Hub search.

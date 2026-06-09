@@ -1,0 +1,77 @@
+[
+  {
+    "id": "healthcare_life_sciences",
+    "name": "Healthcare & Life Sciences",
+    "use_cases": [
+      "Medical imaging analysis (X-rays, MRI scans)",
+      "Protein structure prediction (e.g. AlphaFold-style workflows)",
+      "Drug discovery and molecular screening",
+      "Clinical decision support assistants"
+    ],
+    "compliance_note": "Many YELLOW or ORANGE licenses explicitly prohibit critical medical use or unsupervised diagnostic applications."
+  },
+  {
+    "id": "finance_insurance",
+    "name": "Finance & Insurance",
+    "use_cases": [
+      "Quantitative trading algorithms",
+      "Credit scoring and credit-risk assessment",
+      "Payment-card fraud detection",
+      "Real-time market analysis"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "legal_compliance",
+    "name": "Legal & Compliance",
+    "use_cases": [
+      "Large-scale contract analysis",
+      "Case-law and legal research",
+      "Software and AI license compliance auditing"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "coding_software_engineering",
+    "name": "Coding & Software Engineering",
+    "use_cases": [
+      "Code generation",
+      "Automated refactoring",
+      "Test authoring",
+      "Programming assistants (e.g. IDE copilots)"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "cybersecurity",
+    "name": "Cybersecurity",
+    "use_cases": [
+      "Code vulnerability identification",
+      "Network log analysis for threat blocking",
+      "Threat simulation and penetration testing"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "industrial_automation_robotics",
+    "name": "Industrial Automation & Robotics",
+    "use_cases": [
+      "Predictive maintenance for factory machinery",
+      "Autonomous navigation and guidance",
+      "Supply chain optimization",
+      "Industrial and delivery drones"
+    ],
+    "compliance_note": null
+  },
+  {
+    "id": "creative_industries_marketing",
+    "name": "Creative Industries & Marketing",
+    "use_cases": [
+      "Advertising copy generation",
+      "Game and design asset creation",
+      "Automated video editing",
+      "Content localization"
+    ],
+    "compliance_note": null
+  }
+]

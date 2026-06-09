@@ -1,0 +1,59 @@
+---
+description: Prevent ImportError when app.py imports new symbols from constants/ — always sync source files and verify before deploy.
+alwaysApply: true
+---
+
+# Import sync contract (ModelRoot)
+
+Recurring failure: `app.py` imports a new name from `constants/query.py` or `constants/app_constants.py`, but the server still has the old file → `ImportError: cannot import name '...'`.
+
+**Do not fix this by inlining Cypher in `app.py`.** See `constants-architecture.mdc` — all `*_CYPHER` live in `constants/query.py`.
+
+## Golden rule
+
+**Never add an import in `app.py` without defining the symbol in the source file in the same change.**
+
+| Import in `app.py` | Must define in |
+|---|---|
+| `from constants.query import FOO_CYPHER` | `constants/query.py` |
+| `from constants.app_constants import FOO` | `constants/app_constants.py` |
+| `from constants.brand_urls import BRAND_HF_URLS` | `constants/brand_urls.py` (+ JSON if needed) |
+
+## Agent checklist (every feature that touches imports)
+
+1. Edit the **source** file first (`query.py` / `app_constants.py`).
+2. Then update `app.py` imports and usage.
+3. Run verification (required before considering the task done):
+
+```bash
+rm -rf constants/__pycache__ __pycache__
+./modelroot-env/bin/python3 -m py_compile app.py constants/query.py constants/app_constants.py
+./modelroot-env/bin/python3 -c "
+from constants.query import MODEL_CATALOG_CYPHER, MODEL_PICKER_BROWSE_CYPHER, MODEL_PICKER_SEARCH_CYPHER
+from constants.app_constants import MODE_OPTIONS
+print('imports OK')
+"
+```
+
+4. Tell the user to **fully restart Streamlit** after deploy (not just browser rerun). Prefer `./scripts/run_streamlit.sh` (clears pycache + verifies imports first).
+5. Remind the user to copy **every** file listed in the deploy bundle below.
+6. `app.py` reloads `constants/query.py` on every rerun via `importlib.reload` — if ImportError persists, `query.py` on disk is still outdated (check `QUERY_MODULE_VERSION = 2`).
+
+## Deploy bundle (copy together)
+
+| Change type | Files to deploy |
+|---|---|
+| New/changed Cypher | `app.py` + `constants/query.py` |
+| New UI constants | `app.py` + `constants/app_constants.py` |
+| Layout chrome only (`MAIN_CHROME_*`) | `app.py` only (exception: UI rem, not Cypher) |
+
+Always: `rm -rf constants/__pycache__ __pycache__` then restart Streamlit.
+
+## Example (model picker search)
+
+```
+constants/query.py  → add MODEL_PICKER_BROWSE_CYPHER, MODEL_PICKER_SEARCH_CYPHER
+app.py              → import both, use in load_model_names_by_hf_token_search()
+verify              → py_compile + python -c import check (see above)
+deploy              → app.py AND constants/query.py — never app.py alone
+```

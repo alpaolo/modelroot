@@ -1,9 +1,14 @@
+import sys
+from pathlib import Path
+
 import requests
 from neo4j import GraphDatabase
 
-# Configurazione connessione Neo4j
-URI = "bolt://localhost:7687"
-AUTH = ("neo4j", "y+8B0fxIcrist")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".env"))
+import config as env
+
+URI = env.NEO4J_URI
+AUTH = env.NEO4J_AUTH
 
 def enrich_models_with_papers():
     driver = GraphDatabase.driver(URI, auth=AUTH)

@@ -1,11 +1,15 @@
+import sys
 import time
+from pathlib import Path
+
 from huggingface_hub import HfApi
 from neo4j import GraphDatabase
 
-# Configurazione Neo4j
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "y+8B0fxIcrist"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".env"))
+import config as env
+
+NEO4J_URI = env.NEO4J_URI
+NEO4J_AUTH = env.NEO4J_AUTH
 
 def main():
     print("🚀 Avvio dello Scraper Massivo Centripeto (Target: 10.000 modelli)...")
@@ -26,7 +30,7 @@ def main():
     print(f"✅ Dati Hugging Face scaricati in {hf_time:.2f} secondi. Inizio inserimento in Neo4j...")
 
     # 2. Connessione a Neo4j
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
     
     # Query ottimizzata secondo la logica del tuo grafo
     query = """

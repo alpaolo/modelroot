@@ -1,11 +1,14 @@
+import sys
+from pathlib import Path
+
 from huggingface_hub import HfApi
 from neo4j import GraphDatabase
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".env"))
+import config as env
 
-# --- CONFIGURAZIONE ---
-URI = "bolt://localhost:7687"
-AUTH = ("neo4j", "y+8B0fxIcrist") # Usa la password che abbiamo impostato prima
-AUTH = 
+URI = env.NEO4J_URI
+AUTH = env.NEO4J_AUTH
 
 def scraper_organico():
     api = HfApi()

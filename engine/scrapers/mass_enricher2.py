@@ -1,11 +1,15 @@
+import sys
 import time
+from pathlib import Path
+
 import requests
 from neo4j import GraphDatabase
 
-# Configurazione Neo4j
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "y+8B0fxIcrist"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".env"))
+import config as env
+
+NEO4J_URI = env.NEO4J_URI
+NEO4J_AUTH = env.NEO4J_AUTH
 
 def get_real_license_from_hf(model_id):
     """Interroga l'API del singolo modello per avere il JSON completo al 100%"""
@@ -28,7 +32,7 @@ def get_real_license_from_hf(model_id):
     return "unknown"
 
 def main():
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
     
     # 1. Estraiamo i primi 200 modelli più scaricati che sono ancora "Unknown"
     # Facciamo blocchi da 200 alla volta per testare ed evitare ban da HF

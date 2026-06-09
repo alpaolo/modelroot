@@ -1,6 +1,8 @@
 """
 Neo4j Cypher queries used by the ModelRoot Streamlit app.
+QUERY_MODULE_VERSION = 2 (model picker cyphers)
 """
+QUERY_MODULE_VERSION = 2
 
 LICENSE_GROUP_METADATA_CYPHER = """
 MATCH (g:LicenseGroup)
@@ -23,6 +25,7 @@ ORDER BY brand
 MODEL_CATALOG_CYPHER = """
 MATCH (m:Model)
 WHERE ($search_pattern IS NULL OR m.name =~ $search_pattern)
+  AND (NOT $in_benchmark OR m.oll_rank IS NOT NULL)
   AND (size($tasks) = 0 OR EXISTS {
     MATCH (m)-[:PERFORMS]->(t:Task)
     WHERE t.name IN $tasks
@@ -47,6 +50,7 @@ RETURN m.name AS model,
        coalesce(g.name, 'Unclassified') AS risk_level,
        coalesce(g.compliance, 'License not mapped to a risk group yet.') AS risk_guidance,
        coalesce(m.downloads, 0) AS downloads,
+       CASE WHEN m.oll_rank IS NOT NULL THEN 'Yes' ELSE '—' END AS benchmark,
        m.hf_url AS hf_url,
        m.license_link AS license_link
 ORDER BY downloads DESC
@@ -58,23 +62,66 @@ MATCH (m:Model {name: $model_name})
 OPTIONAL MATCH (m)-[:UNDER_LICENSE]->(l:License)
 OPTIONAL MATCH (l)-[:BELONGS_TO]->(g:LicenseGroup)
 OPTIONAL MATCH (m)-[:PERFORMS]->(t:Task)
+OPTIONAL MATCH (t)<-[:GROUPS]-(td:TechDomain)
 OPTIONAL MATCH (m)-[:PUBLISHED_BY]->(b:MainBrand)
+WITH m, l, g,
+     head(collect(DISTINCT t.name)) AS task,
+     head(collect(DISTINCT b.name)) AS brand,
+     collect(DISTINCT td.name) AS tech_domain_names
 RETURN m.name AS model,
        coalesce(l.name, 'unknown') AS license,
        coalesce(g.id, 'UNKNOWN') AS license_group,
        g.name AS license_group_name,
        g.compliance AS license_group_compliance,
-       coalesce(t.name, '—') AS task,
-       coalesce(b.name, '—') AS brand,
+       coalesce(task, '—') AS task,
+       [name IN tech_domain_names WHERE name IS NOT NULL | name] AS tech_domain_names,
+       coalesce(brand, '—') AS brand,
        coalesce(m.downloads, 0) AS downloads,
        m.hf_url AS hf_url,
-       m.license_link AS license_link
+       m.license_link AS license_link,
+       m.oll_average AS oll_average,
+       m.oll_rank AS oll_rank,
+       m.oll_ifeval AS oll_ifeval,
+       m.oll_bbh AS oll_bbh,
+       m.oll_math_lvl5 AS oll_math_lvl5,
+       m.oll_gpqa AS oll_gpqa,
+       m.oll_musr AS oll_musr,
+       m.oll_mmlu_pro AS oll_mmlu_pro,
+       m.oll_params_b AS oll_params_b,
+       m.oll_submission_date AS oll_submission_date
 """.strip()
 
 ALL_MODEL_NAMES_BY_DOWNLOADS_CYPHER = """
 MATCH (m:Model)
 RETURN m.name AS model
 ORDER BY m.downloads DESC
+""".strip()
+
+MODEL_PICKER_BROWSE_CYPHER = """
+MATCH (m:Model)
+RETURN m.name AS model
+ORDER BY coalesce(m.downloads, 0) DESC
+LIMIT $limit
+""".strip()
+
+MODEL_PICKER_SEARCH_CYPHER = """
+MATCH (m:Model)
+WHERE m.name =~ $search_pattern
+RETURN m.name AS model
+ORDER BY CASE WHEN m.oll_rank IS NOT NULL THEN m.oll_rank ELSE 999999 END ASC,
+         coalesce(m.downloads, 0) DESC
+LIMIT $limit
+""".strip()
+
+DERIVED_MODELS_CYPHER = """
+MATCH (derivative:Model)-[:DERIVED_FROM]->(base:Model {name: $model_name})
+OPTIONAL MATCH (derivative)-[:UNDER_LICENSE]->(l:License)
+RETURN derivative.name AS model,
+       coalesce(derivative.downloads, 0) AS downloads,
+       coalesce(l.name, 'unknown') AS license,
+       derivative.hf_url AS hf_url
+ORDER BY derivative.downloads DESC
+LIMIT $limit
 """.strip()
 
 MODEL_NEIGHBORHOOD_CYPHER = """

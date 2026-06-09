@@ -1,6 +1,6 @@
 ---
 description: Pipeline e convenzioni per scraper/enricher ModelRoot
-globs: modelroot/source/scrapers/**/*.py
+globs: modelroot/engine/scrapers/**/*.py
 alwaysApply: false
 ---
 
@@ -8,17 +8,40 @@ alwaysApply: false
 
 ## Pipeline (ordine esecuzione)
 
-1. `mass_scraper2.py` — ingest base (modelli, task, dataset, licenza grezza)
-2. `enrich_model_links.py` — `hf_url`, `license_link` su `Model`
-3. `mass_licences_other.py` — risoluzione licenze + `LicenseGroup`
-4. `papers_enrich.py` — paper / arxiv
-5. (futuro) `enrich_domains.py`, `enrich_resources.py`
+**Entry point unico:** `engine/sync.py` (vedi `.cursor/rules/engine-sync.mdc`). Non lanciare gli step a mano salvo debug.
+
+| Step | Script | Scrive su | Cosa fa |
+|------|--------|-----------|---------|
+| 1 | `mass_scraper2.py` | Neo4j | Ingest base: `Model`, `MainBrand`, `License`, `Task`, `Dataset`, `Paper`; relazioni `PUBLISHED_BY`, `PERFORMS`, `UNDER_LICENSE`, `USED_DATASET`, `DERIVED_FROM`, `CITED_IN` |
+| 2 | `enrich_model_links.py` | Neo4j | `Model.hf_url`, `Model.license_link` (API HF cardData) |
+| 3 | `mass_licences_other.py` | Neo4j | Risoluzione licenze + `LicenseGroup` + `BELONGS_TO` |
+| 4 | `papers_enrich.py` | Neo4j | Paper / arXiv, relazioni `BASED_ON_PAPER` / `CITED_IN` |
+| 5 | `enrich_dataset_urls.py` | Neo4j + JSON | `Dataset.documentation_url` + `constants/dataset_urls.json` (FETCH→MERGE→CACHE) |
+| 6 | `enrich_tech_domains.py` | Neo4j | Nodi `TechDomain` + `(TechDomain)-[:GROUPS]->(Task)` da JSON curati |
+| 7 | `enrich_open_llm_leaderboard.py` | Neo4j + JSON | Score Open LLM Leaderboard su `Model` + `constants/open_llm_leaderboard.json` |
+| 8 | *(futuro)* `enrich_industry_domains.py` | Neo4j | Domini business da `domains.json` |
+
+```bash
+cd /home/ubuntu/modelroot
+./modelroot-env/bin/python3 engine/sync.py
+```
+
+**Config Neo4j**
+- Credenziali in `.env/config.py` (gitignored). Template: `.env/config.example.py`
+- Import diretto: `sys.path` su `.env/` + `import config as env`
+
+**Note**
+- Step 1 quando si aggiorna il catalogo HF; `sync.py` riesegue tutto in ordine con report finale.
+- Enricher **volatile** (5, 7): FETCH → MERGE Neo4j → CACHE JSON nello stesso run.
+- JSON **curati** (6, 8): edit manualmente, poi sync.
+- Step 6 idempotente (`MERGE`); rilanciare dopo modifiche a `task_tech_domain_map.json`.
+- MTEB/embedding: track separato, non in questa pipeline.
 
 ## Regole
 
 - **Un script = una responsabilità.** Non mescolare link, licenze, paper o domini nello stesso file.
 - **Naming:** `mass_*` = batch su tutto il DB; `enrich_*` = arricchimento mirato su campo specifico.
-- **Script obsoleti** → `source/deprecated/`, non eliminare senza motivo.
+- **Script obsoleti** → `engine/deprecated/`, non eliminare senza motivo.
 - **Idempotenza:** ogni enricher processa solo nodi non ancora arricchiti (`WHERE m.hf_url IS NULL`, ecc.).
 - **Log:** `[OK]` solo dopo conferma scrittura Neo4j; `[SKIP]` se nessun miglioramento.
 - **Non toccare** `mass_licences_other.py` per link o domini.
@@ -30,6 +53,9 @@ alwaysApply: false
 | `enrich_model_links.py` | `hf_url`, `license_link` |
 | `mass_licences_other.py` | relazione `UNDER_LICENSE` + `BELONGS_TO` |
 | `papers_enrich.py` | relazione `BASED_ON_PAPER` / `CITED_IN` |
+| `enrich_dataset_urls.py` | `Dataset.documentation_url`, `constants/dataset_urls.json` |
+| `enrich_tech_domains.py` | nodo `TechDomain` + relazione `GROUPS` verso `Task` |
+| `enrich_open_llm_leaderboard.py` | `Model.oll_*`, `constants/open_llm_leaderboard.json` |
 
 `hf_url` = `https://huggingface.co/{name}` — derivabile senza API.
 `license_link` = navigazione DS (`cardData.license_link`), non usato per risolvere licenze.
@@ -37,7 +63,7 @@ alwaysApply: false
 ## Esempio — nuovo enricher
 
 ```python
-# enrich_domains.py — CORRETTO: file dedicato, query su modi senza dominio
+# enrich_industry_domains.py — CORRETTO: file dedicato, step 7 della pipeline
 
 # ❌ SBAGLIATO: aggiungere domini in mass_licences_other.py o enricher.py legacy
 ```
