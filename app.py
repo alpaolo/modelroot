@@ -1,7 +1,8 @@
 """
 ModelRoot Streamlit app — catalog-first UX for license-aware model discovery.
 
-Modes: Model Catalog (default), Model Detail (1-hop graph), License Intelligence, Graph Explorer.
+Modes: Chat (default landing), Model Catalog, Model Detail, License Intelligence, Graph Explorer.
+Chat LLM provider configured in .env/config.py (CHAT_LLM_PROVIDER + provider API key).
 Catalog: filter + table row selection only. Model name search uses HF token boundaries (/ - _ .), not raw substring (bert ≠ roberta).
 Detail: Find model searches all Model nodes in Neo4j; radio lists all matching versions; fixed model bar under header.
 Graph Explorer: find field + in-memory match list (detail_model).
@@ -20,11 +21,11 @@ import os
 import re
 import sys
 import tempfile
+import time
 from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from neo4j import GraphDatabase
 from pyvis.network import Network
 
@@ -99,6 +100,8 @@ from constants.app_constants import (
     LICENSE_WIKIPEDIA_PAGES,
     LINK_COLUMN_DISPLAY_TEXT,
     MINI_GRAPH_OPTIONS,
+    CHAT_LANGUAGE_LABELS,
+    CHAT_LANGUAGE_OPTIONS,
     MODE_OPTIONS,
     MODEL_PICKER_BROWSE_LIMIT,
     MODEL_PICKER_MATCH_LIMIT,
@@ -116,6 +119,17 @@ from constants.app_constants import (
 )
 NEO4J_URI = env.NEO4J_URI
 NEO4J_AUTH = env.NEO4J_AUTH
+CHAT_LLM_PROVIDER = getattr(env, "CHAT_LLM_PROVIDER", "deepseek")
+CHAT_MAX_ROWS = int(getattr(env, "CHAT_MAX_ROWS", 50))
+CHAT_DEFAULT_LANGUAGE = getattr(env, "CHAT_DEFAULT_LANGUAGE", "en")
+SHOW_CYPHER_DEBUG = bool(getattr(env, "SHOW_CYPHER_DEBUG", False))
+CHAT_ENABLED = bool(getattr(env, "CHAT_ENABLED", True))
+CHAT_MAX_QUESTION_CHARS = int(getattr(env, "CHAT_MAX_QUESTION_CHARS", 400))
+CHAT_MAX_REQUESTS_PER_SESSION = int(getattr(env, "CHAT_MAX_REQUESTS_PER_SESSION", 50))
+CHAT_MAX_REQUESTS_PER_HOUR = int(getattr(env, "CHAT_MAX_REQUESTS_PER_HOUR", 40))
+CHAT_MIN_SECONDS_BETWEEN_REQUESTS = int(
+    getattr(env, "CHAT_MIN_SECONDS_BETWEEN_REQUESTS", 2)
+)
 
 _GRAPH_CANVAS_HEIGHT_TRIM_PX = 18
 
@@ -441,6 +455,24 @@ def get_driver():
 def run_query(query, params=None):
     with get_driver().session() as session:
         return [dict(record) for record in session.run(query, params or {})]
+
+
+@st.cache_resource
+def get_chat_service():
+    from engine.chat.providers import get_active_provider_status
+    from engine.chat.service import ChatService
+
+    provider_status = get_active_provider_status(env)
+    if not provider_status["api_key_configured"]:
+        return None
+
+    return ChatService.from_config(env, neo4j_execute=run_query)
+
+
+def get_chat_provider_status():
+    from engine.chat.providers import get_active_provider_status
+
+    return get_active_provider_status(env)
 
 
 @st.cache_data
@@ -1041,7 +1073,7 @@ def render_pyvis_graph_html(net, data_view_height):
     with open(graph_path, "r", encoding="utf-8") as graph_file:
         graph_html = graph_file.read().replace("</head>", f"{graph_overflow_fix_css}</head>")
     os.remove(graph_path)
-    components.html(graph_html, height=data_view_height, scrolling=False)
+    st.iframe(graph_html, height=data_view_height)
 
 
 def render_mini_graph(center_model, edges, data_view_height):
@@ -1067,6 +1099,294 @@ def render_mini_graph(center_model, edges, data_view_height):
         net.add_edge(source, target, label=relation.replace("_", " "), color=color, arrows="to")
 
     render_pyvis_graph_html(net, data_view_height)
+
+
+def serialize_chat_result_for_session(chat_result):
+    return {
+        "role": "assistant",
+        "content": chat_result.answer_text,
+        "output_kind": chat_result.output_kind.value,
+        "cypher": chat_result.cypher,
+        "rows": chat_result.rows,
+        "detail_model_name": chat_result.detail_model_name,
+        "error": chat_result.error,
+    }
+
+
+def render_chat_cypher_debug(cypher_text):
+    if SHOW_CYPHER_DEBUG and cypher_text:
+        with st.expander("Generated Cypher (dev)", expanded=False):
+            st.code(cypher_text, language="cypher")
+
+
+def render_chat_detail_preview(model_name):
+    detail = load_model_detail(model_name)
+    if not detail:
+        st.warning(f"Model `{model_name}` not found in the graph.")
+        return
+
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    with metric_col1:
+        st.metric("Downloads", f"{detail['downloads']:,}")
+    with metric_col2:
+        st.metric("Brand", detail["brand"])
+    with metric_col3:
+        if model_has_benchmark(detail):
+            st.metric("OLL rank", f"#{int(detail['oll_rank'])}")
+        else:
+            st.metric("Benchmark", "—")
+
+    st.markdown(
+        render_license_with_risk(
+            detail["license"],
+            detail["license_group"],
+            detail.get("license_group_name"),
+        ),
+        unsafe_allow_html=True,
+    )
+    st.write(
+        "Task",
+        format_task_with_tech_domain(detail["task"], detail["tech_domain_names"]),
+    )
+
+    link_col1, link_col2 = st.columns(2)
+    with link_col1:
+        hf_url = detail.get("hf_url") or f"https://huggingface.co/{detail['model']}"
+        st.link_button("Open on Hugging Face", hf_url)
+    with link_col2:
+        if detail.get("license_link"):
+            st.link_button("Open license document", detail["license_link"])
+
+
+def render_chat_catalog_results(catalog_dataframe, data_view_height, message_index):
+    if catalog_dataframe is None or catalog_dataframe.empty:
+        return None
+
+    display_dataframe = catalog_dataframe
+    if "hf_url" in display_dataframe.columns or "license_link" in display_dataframe.columns:
+        link_columns = [
+            column_name
+            for column_name in CATALOG_LINK_COLUMNS
+            if column_name in display_dataframe.columns
+        ]
+        if link_columns:
+            display_dataframe = prepare_dataframe_link_columns(display_dataframe, link_columns)
+
+    column_config = {}
+    for column_name, column_builder in (
+        ("model", get_model_text_column),
+        ("brand", get_brand_text_column),
+        ("task", get_task_text_column),
+        ("license", get_license_text_column),
+        ("risk_level", get_risk_text_column),
+    ):
+        if column_name in display_dataframe.columns:
+            column_config[column_name] = column_builder()
+
+    if "downloads" in display_dataframe.columns:
+        column_config["downloads"] = st.column_config.NumberColumn("DL", format="%d", width="small")
+    if "benchmark" in display_dataframe.columns:
+        column_config["benchmark"] = st.column_config.TextColumn("Benchmark", width="small")
+    if "dataset" in display_dataframe.columns:
+        column_config["dataset"] = st.column_config.TextColumn("Dataset", width="medium")
+    if "hf_url" in display_dataframe.columns:
+        column_config["hf_url"] = get_hf_link_column()
+    if "license_link" in display_dataframe.columns:
+        column_config["license_link"] = get_license_link_column()
+
+    table_dataframe = display_dataframe
+    if "license_group" in display_dataframe.columns:
+        styled_columns = [column for column in CATALOG_STYLED_COLUMNS if column in display_dataframe.columns]
+        if styled_columns:
+            table_dataframe = build_styled_risk_rows_dataframe(
+                display_dataframe,
+                list(display_dataframe.columns),
+                styled_columns,
+            )
+
+    table_selection = st.dataframe(
+        table_dataframe,
+        column_config=column_config or None,
+        hide_index=True,
+        width="stretch",
+        height=min(data_view_height, 360),
+        row_height=DATAFRAME_ROW_HEIGHT_PX,
+        placeholder=DATAFRAME_PLACEHOLDER,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"chat_catalog_{message_index}",
+    )
+
+    selected_model = None
+    if "model" in display_dataframe.columns:
+        model_names = display_dataframe["model"].dropna().astype(str).tolist()
+        if table_selection.selection.rows:
+            selected_model = display_dataframe.iloc[table_selection.selection.rows[0]]["model"]
+            st.session_state["detail_model"] = selected_model
+        elif st.session_state.get("detail_model") in model_names:
+            selected_model = st.session_state["detail_model"]
+
+    if st.button(
+        "View detail",
+        type="primary",
+        disabled=selected_model is None,
+        key=f"chat_view_detail_{message_index}",
+    ):
+        st.session_state["detail_model"] = selected_model
+        st.session_state["pending_mode"] = "Model Detail"
+        clear_detail_search_session_state()
+        st.rerun()
+
+    return selected_model
+
+
+def render_chat_assistant_payload(assistant_message, data_view_height, message_index):
+    render_chat_cypher_debug(assistant_message.get("cypher", ""))
+
+    output_kind = assistant_message.get("output_kind", "text")
+    if output_kind == "detail" and assistant_message.get("detail_model_name"):
+        render_chat_detail_preview(assistant_message["detail_model_name"])
+        if st.button(
+            "Open full Model Detail",
+            type="primary",
+            key=f"chat_open_detail_{message_index}",
+        ):
+            st.session_state["detail_model"] = assistant_message["detail_model_name"]
+            st.session_state["pending_mode"] = "Model Detail"
+            clear_detail_search_session_state()
+            st.rerun()
+        return
+
+    if output_kind == "catalog" and assistant_message.get("rows"):
+        from engine.chat.result_router import normalize_rows_to_catalog_dataframe
+
+        catalog_dataframe = normalize_rows_to_catalog_dataframe(assistant_message["rows"])
+        render_chat_catalog_results(catalog_dataframe, data_view_height, message_index)
+        return
+
+    rows = assistant_message.get("rows") or []
+    if rows:
+        render_scrollable_dataframe(
+            pd.DataFrame(rows),
+            min(data_view_height, 280),
+            hide_index=True,
+        )
+
+
+def _init_chat_rate_limit_state():
+    if "chat_rate_limit" not in st.session_state:
+        st.session_state["chat_rate_limit"] = {
+            "session_request_count": 0,
+            "hour_window_start": time.time(),
+            "hour_request_count": 0,
+            "last_request_at": 0.0,
+        }
+
+
+def check_chat_session_rate_limit():
+    _init_chat_rate_limit_state()
+    rate_limit_state = st.session_state["chat_rate_limit"]
+    current_time = time.time()
+
+    if current_time - rate_limit_state["hour_window_start"] >= 3600:
+        rate_limit_state["hour_window_start"] = current_time
+        rate_limit_state["hour_request_count"] = 0
+
+    if rate_limit_state["session_request_count"] >= CHAT_MAX_REQUESTS_PER_SESSION:
+        return (
+            f"Session limit reached ({CHAT_MAX_REQUESTS_PER_SESSION} questions). "
+            "Refresh the page to start a new session."
+        )
+
+    if rate_limit_state["hour_request_count"] >= CHAT_MAX_REQUESTS_PER_HOUR:
+        return (
+            f"Hourly limit reached ({CHAT_MAX_REQUESTS_PER_HOUR} questions). "
+            "Try again later."
+        )
+
+    seconds_since_last_request = current_time - rate_limit_state["last_request_at"]
+    if (
+        rate_limit_state["last_request_at"] > 0
+        and seconds_since_last_request < CHAT_MIN_SECONDS_BETWEEN_REQUESTS
+    ):
+        wait_seconds = CHAT_MIN_SECONDS_BETWEEN_REQUESTS - seconds_since_last_request
+        return f"Please wait {wait_seconds:.0f}s before the next question."
+
+    return None
+
+
+def record_chat_request():
+    _init_chat_rate_limit_state()
+    rate_limit_state = st.session_state["chat_rate_limit"]
+    rate_limit_state["session_request_count"] += 1
+    rate_limit_state["hour_request_count"] += 1
+    rate_limit_state["last_request_at"] = time.time()
+
+
+def render_chat_page(data_view_height):
+    chat_provider_status = get_chat_provider_status()
+    st.caption(
+        "Ask about models, licenses, Open LLM Leaderboard ranks, and datasets. "
+        f"Provider: **{chat_provider_status['provider']}** · "
+        f"model: `{chat_provider_status['model']}` · "
+        f"max {CHAT_MAX_QUESTION_CHARS} chars/question."
+    )
+
+    if not CHAT_ENABLED:
+        st.warning("Chat is disabled in config (`CHAT_ENABLED = False`).")
+        return
+
+    if not chat_provider_status["api_key_configured"]:
+        st.warning(
+            f"Set the API key for provider `{chat_provider_status['provider']}` in "
+            "`.env/config.py` "
+            f"({chat_provider_status['setup_hint']}). "
+            "Switch provider via `CHAT_LLM_PROVIDER`."
+        )
+        return
+
+    chat_service = get_chat_service()
+    if chat_service is None:
+        st.error("Chat service could not be initialized.")
+        return
+
+    if "chat_messages" not in st.session_state:
+        st.session_state["chat_messages"] = []
+
+    chat_language = st.session_state.get("chat_language", CHAT_DEFAULT_LANGUAGE)
+
+    for message_index, chat_message in enumerate(st.session_state["chat_messages"]):
+        with st.chat_message(chat_message["role"]):
+            st.markdown(chat_message["content"])
+            if chat_message["role"] == "assistant":
+                render_chat_assistant_payload(chat_message, data_view_height, message_index)
+
+    user_prompt = st.chat_input(
+        "Ask ModelRoot…",
+        max_chars=CHAT_MAX_QUESTION_CHARS,
+    )
+    if user_prompt:
+        rate_limit_message = check_chat_session_rate_limit()
+        if rate_limit_message:
+            st.session_state["chat_messages"].append({"role": "user", "content": user_prompt})
+            st.session_state["chat_messages"].append({
+                "role": "assistant",
+                "content": rate_limit_message,
+                "output_kind": "text",
+                "cypher": "",
+                "rows": [],
+                "detail_model_name": None,
+                "error": "rate_limit",
+            })
+            st.rerun()
+            return
+
+        st.session_state["chat_messages"].append({"role": "user", "content": user_prompt})
+        record_chat_request()
+        with st.spinner("Querying graph…"):
+            chat_result = chat_service.ask(user_prompt, language=chat_language)
+        st.session_state["chat_messages"].append(serialize_chat_result_for_session(chat_result))
+        st.rerun()
 
 
 def render_catalog_page(query_limit, data_view_height):
@@ -1358,7 +1678,7 @@ def render_graph_explorer_page(query_limit, data_view_height):
 
 # --- UI ---
 if "mode" not in st.session_state:
-    st.session_state["mode"] = "Model Catalog"
+    st.session_state["mode"] = "Chat"
 
 if st.session_state.get("pending_mode"):
     pending_mode = st.session_state.pop("pending_mode")
@@ -1372,6 +1692,20 @@ st.sidebar.markdown("##### AI Lineage & Compliance Knowledge Graph. #####")
 
 st.sidebar.radio("Mode", MODE_OPTIONS, key="mode")
 mode = st.session_state["mode"]
+
+if mode == "Chat":
+    default_chat_language_index = (
+        CHAT_LANGUAGE_OPTIONS.index(CHAT_DEFAULT_LANGUAGE)
+        if CHAT_DEFAULT_LANGUAGE in CHAT_LANGUAGE_OPTIONS
+        else 0
+    )
+    st.sidebar.radio(
+        "Chat language",
+        CHAT_LANGUAGE_OPTIONS,
+        index=default_chat_language_index,
+        format_func=lambda language_code: CHAT_LANGUAGE_LABELS[language_code],
+        key="chat_language",
+    )
 
 if "query_limit" not in st.session_state:
     st.session_state["query_limit"] = QUERY_LIMIT_DEFAULT
@@ -1409,7 +1743,9 @@ if mode == "Model Detail":
 inject_app_styles(show_detail_model_bar=(mode == "Model Detail" and detail_active_model))
 render_main_header(mode, database_snapshot_summary)
 
-if mode == "Model Detail":
+if mode == "Chat":
+    render_chat_page(data_view_height)
+elif mode == "Model Detail":
     if detail_active_model:
         render_detail_model_bar(detail_active_model)
     render_detail_page_body(detail_active_model, query_limit, data_view_height)

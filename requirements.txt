@@ -20,6 +20,11 @@ httpcore==1.0.9
 httptools==0.8.0
 httpx==0.28.1
 huggingface_hub==1.17.0
+google-generativeai>=0.8.0
+langchain-core>=0.3.0
+langchain-deepseek>=0.1.0
+langchain-google-genai>=2.0.0
+langchain-openai>=0.3.0
 idna==3.18
 ipython==9.14.1
 ipython_pygments_lexers==1.1.1

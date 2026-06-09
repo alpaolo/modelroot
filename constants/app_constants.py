@@ -156,7 +156,11 @@ GRAPH_EXPLORER_PHYSICS_OPTIONS = {
 GRAPH_EXPLORER_DEFAULT_REL_LIMIT = 6
 
 # App navigation
-MODE_OPTIONS = ["Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"]
+MODE_OPTIONS = ["Chat", "Model Catalog", "Model Detail", "License Intelligence", "Graph Explorer"]
+
+# Chat sidebar language toggle
+CHAT_LANGUAGE_OPTIONS = ("en", "it")
+CHAT_LANGUAGE_LABELS = {"en": "English", "it": "Italiano"}
 
 # License group legend fallback row
 UNCLASSIFIED_LICENSE_GROUP_LEGEND = {
